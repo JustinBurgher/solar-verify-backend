@@ -36,7 +36,7 @@ class QuoteAnalysis(db.Model):
     __tablename__ = 'quote_analyses'
     
     id = db.Column(db.Integer, primary_key=True)
-    email = db.Column(db.String(255), nullable=True)
+    # REMOVED: email = db.Column(db.String(255), nullable=True)  # This column doesn't exist in DB
     system_size = db.Column(db.Float, nullable=False)
     battery_size = db.Column(db.Float, nullable=True)
     total_price = db.Column(db.Float, nullable=False)
@@ -137,9 +137,12 @@ def analyze_quote():
         system_size = float(data.get('system_size', 0))
         battery_size = float(data.get('battery_size', 0)) if data.get('battery_size') else None
         total_price = float(data.get('total_price', 0))
-        email = data.get('email', '').strip().lower() if data.get('email') else None
+        # REMOVED: email = data.get('email', '').strip().lower() if data.get('email') else None
+        
+        logger.info(f"Analyzing quote: system_size={system_size}, battery_size={battery_size}, total_price={total_price}")
         
         if system_size <= 0 or total_price <= 0:
+            logger.error(f"Invalid input: system_size={system_size}, total_price={total_price}")
             return jsonify({'error': 'Invalid system size or price'}), 400
         
         # Calculate price per kW
@@ -165,20 +168,27 @@ def analyze_quote():
             grade = 'F'
             verdict = 'Severely overpriced - avoid'
         
-        # Save analysis to database
-        analysis = QuoteAnalysis(
-            email=email,
-            system_size=system_size,
-            battery_size=battery_size,
-            total_price=total_price,
-            price_per_kw=price_per_kw,
-            grade=grade,
-            verdict=verdict
-        )
-        db.session.add(analysis)
-        db.session.commit()
+        logger.info(f"Analysis result: grade={grade}, price_per_kw={price_per_kw}, verdict={verdict}")
         
-        logger.info(f"Quote analyzed: {system_size}kW, £{total_price}, Grade {grade}")
+        # Save analysis to database (WITHOUT email field)
+        try:
+            analysis = QuoteAnalysis(
+                # REMOVED: email=email,  # This was causing the database error
+                system_size=system_size,
+                battery_size=battery_size,
+                total_price=total_price,
+                price_per_kw=price_per_kw,
+                grade=grade,
+                verdict=verdict
+            )
+            db.session.add(analysis)
+            db.session.commit()
+            logger.info(f"Analysis saved to database with ID: {analysis.id}")
+        except Exception as db_error:
+            logger.error(f"Database save error: {db_error}")
+            # Continue anyway - don't fail the analysis if database save fails
+        
+        logger.info(f"Quote analyzed successfully: {system_size}kW, £{total_price}, Grade {grade}")
         
         return jsonify({
             'success': True,
@@ -197,6 +207,9 @@ def analyze_quote():
             }
         })
         
+    except ValueError as ve:
+        logger.error(f"Value error in analyze_quote: {ve}")
+        return jsonify({'error': 'Invalid number format in input data'}), 400
     except Exception as e:
         logger.error(f"Error analyzing quote: {e}")
         return jsonify({'error': 'Internal server error'}), 500
