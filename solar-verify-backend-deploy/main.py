@@ -6,7 +6,6 @@ import string
 import hashlib
 from datetime import datetime, timedelta
 import os
-import openai
 
 app = Flask(__name__)
 CORS(app)
@@ -14,13 +13,13 @@ CORS(app)
 # Admin email configuration
 ADMIN_EMAIL = "justinburgher@live.co.uk"
 
-# Database initialization - THIS WAS MISSING!
+# Database initialization
 def init_database():
     """Initialize the database with required tables"""
     conn = sqlite3.connect('solar_analyzer.db')
     cursor = conn.cursor()
     
-    # Create email_verifications table - THIS IS WHAT WAS MISSING!
+    # Create email_verifications table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS email_verifications (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -47,7 +46,7 @@ def init_database():
     conn.close()
     print("✅ Database initialized successfully")
 
-# Initialize database on startup - THIS WAS MISSING!
+# Initialize database on startup
 init_database()
 
 # Battery options data
