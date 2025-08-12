@@ -3,13 +3,9 @@ from flask_cors import CORS
 import logging
 import random
 import string
-import smtplib
-from email.mime.text import MimeText
-from email.mime.multipart import MimeMultipart
 import sqlite3
 import hashlib
 import datetime
-import os
 import re
 
 app = Flask(__name__)
@@ -18,13 +14,6 @@ CORS(app)
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# Email configuration
-SMTP_SERVER = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
-SMTP_PORT = int(os.getenv('SMTP_PORT', '587'))
-SMTP_USERNAME = os.getenv('SMTP_USERNAME', '')
-SMTP_PASSWORD = os.getenv('SMTP_PASSWORD', '')
-FROM_EMAIL = os.getenv('FROM_EMAIL', 'hello@solarverify.co.uk')
 
 # Database setup
 def init_db():
@@ -212,84 +201,19 @@ def generate_verification_code():
     """Generate a 6-digit verification code"""
     return ''.join(random.choices(string.digits, k=6))
 
-def send_verification_email(email, code):
-    """Send verification email with GDPR-compliant content"""
+def simulate_send_verification_email(email, code):
+    """Simulate sending verification email (logs code for testing)"""
     try:
-        if not SMTP_USERNAME or not SMTP_PASSWORD:
-            logger.warning("SMTP credentials not configured")
-            return False
-            
-        msg = MimeMultipart()
-        msg['From'] = FROM_EMAIL
-        msg['To'] = email
-        msg['Subject'] = "Solar✓erify - Verify Your Email Address"
+        # Log the verification code for testing purposes
+        logger.info(f"🔑 VERIFICATION CODE for {email}: {code}")
+        logger.info(f"📧 Email would be sent to: {email}")
+        logger.info(f"📝 Subject: Solar✓erify - Verify Your Email Address")
+        logger.info(f"💌 In production, this would send a professional GDPR-compliant email")
         
-        html_body = f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <meta charset="utf-8">
-            <title>Verify Your Email - Solar✓erify</title>
-        </head>
-        <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-            <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
-                <div style="text-align: center; margin-bottom: 30px;">
-                    <h1 style="color: #14B8A6;">Solar✓erify</h1>
-                    <p style="color: #666;">Protecting UK homeowners from solar scams</p>
-                </div>
-                
-                <h2>Verify Your Email Address</h2>
-                
-                <p>Thank you for choosing Solar✓erify! To unlock your additional free analyses and receive your Solar Buyer's Protection Guide, please verify your email address.</p>
-                
-                <div style="background: #f0fdfa; padding: 20px; border-radius: 8px; text-align: center; margin: 20px 0;">
-                    <h3 style="margin: 0; color: #14B8A6;">Your Verification Code</h3>
-                    <div style="font-size: 32px; font-weight: bold; letter-spacing: 8px; color: #0f766e; margin: 10px 0;">
-                        {code}
-                    </div>
-                    <p style="margin: 0; color: #666; font-size: 14px;">Enter this code on the Solar✓erify website</p>
-                </div>
-                
-                <p><strong>What you'll get after verification:</strong></p>
-                <ul>
-                    <li>✓ 2 additional free quote analyses</li>
-                    <li>✓ Solar Buyer's Protection Guide (PDF)</li>
-                    <li>✓ 20 essential questions to ask installers</li>
-                    <li>✓ Red flags to avoid</li>
-                    <li>✓ Warranty checklist</li>
-                </ul>
-                
-                <div style="background: #f9fafb; padding: 15px; border-radius: 8px; margin: 20px 0; font-size: 12px; color: #666;">
-                    <h4 style="margin-top: 0;">Data Protection Notice</h4>
-                    <p>This email confirms your consent to receive our Solar Buyer's Protection Guide and occasional solar industry insights. We respect your privacy and will never share your data with third parties. You can unsubscribe at any time by contacting hello@solarverify.co.uk</p>
-                </div>
-                
-                <p>If you didn't request this verification, please ignore this email.</p>
-                
-                <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 30px 0;">
-                
-                <div style="text-align: center; color: #666; font-size: 12px;">
-                    <p>Solar✓erify - Protecting UK homeowners from solar scams</p>
-                    <p>Contact us: hello@solarverify.co.uk</p>
-                    <p>This email was sent because you requested email verification on our website.</p>
-                </div>
-            </div>
-        </body>
-        </html>
-        """
-        
-        msg.attach(MimeText(html_body, 'html'))
-        
-        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
-        server.starttls()
-        server.login(SMTP_USERNAME, SMTP_PASSWORD)
-        server.send_message(msg)
-        server.quit()
-        
-        logger.info(f"Verification email sent to {email}")
+        # Always return True for simulation
         return True
     except Exception as e:
-        logger.error(f"Failed to send email: {str(e)}")
+        logger.error(f"Error in email simulation: {str(e)}")
         return False
 
 def calculate_grade(percentage):
@@ -334,8 +258,9 @@ def health_check():
     return jsonify({
         'status': 'healthy',
         'timestamp': datetime.datetime.now().isoformat(),
-        'version': '2.1.0-email-enabled',
-        'email_configured': bool(SMTP_USERNAME and SMTP_PASSWORD)
+        'version': '2.1.0-simplified-email',
+        'email_simulation': True,
+        'note': 'Email verification codes are logged to Railway console for testing'
     }), 200
 
 @app.route('/api/analyze-quote', methods=['POST'])
@@ -458,7 +383,7 @@ def get_battery_options():
 
 @app.route('/api/send-verification', methods=['POST'])
 def send_verification():
-    """Send verification email with GDPR compliance"""
+    """Send verification email (simulated for Railway compatibility)"""
     try:
         data = request.get_json()
         email = data.get('email', '').lower().strip()
@@ -513,10 +438,13 @@ def send_verification():
         conn.commit()
         conn.close()
         
-        # Send verification email
-        if send_verification_email(email, verification_code):
-            logger.info(f"Verification email sent to {email_hash[:8]}...")
-            return jsonify({'message': 'Verification email sent successfully'}), 200
+        # Simulate sending verification email
+        if simulate_send_verification_email(email, verification_code):
+            logger.info(f"Verification email simulated for {email_hash[:8]}...")
+            return jsonify({
+                'message': 'Verification email sent successfully',
+                'note': 'Check Railway logs for verification code (simulation mode)'
+            }), 200
         else:
             return jsonify({'error': 'Failed to send verification email'}), 500
             
@@ -577,7 +505,10 @@ def verify_email():
         conn.close()
         
         logger.info(f"Email verified for {email_hash[:8]}...")
-        return jsonify({'message': 'Email verified successfully'}), 200
+        return jsonify({
+            'message': 'Email verified successfully',
+            'note': 'You now have access to 2 additional free analyses'
+        }), 200
         
     except Exception as e:
         logger.error(f"Error in verify_email: {str(e)}")
