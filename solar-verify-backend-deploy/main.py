@@ -1,177 +1,209 @@
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import sqlite3
+import logging
 import random
 import string
+import sqlite3
 import hashlib
-from datetime import datetime, timedelta
-import logging
+import datetime
+import re
+
+app = Flask(__name__)
+CORS(app)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = Flask(__name__)
-CORS(app)
+# ADMIN CONFIGURATION
+ADMIN_EMAILS = ['justinburgher@live.co.uk']  # Admin emails get unlimited access
 
-# Admin email for unlimited access
-ADMIN_EMAIL = "justinburgher@live.co.uk"
+def is_admin_email(email):
+    """Check if email is an admin email"""
+    return email.lower() in [admin.lower() for admin in ADMIN_EMAILS]
 
-# Battery options with capacities
-BATTERY_OPTIONS = [
-    {"brand": "Tesla Powerwall 3 (13.5kWh)", "capacity": 13.5},
-    {"brand": "Tesla Powerwall 2 (13.5kWh)", "capacity": 13.5},
-    {"brand": "Enphase IQ Battery 5P (5kWh)", "capacity": 5.0},
-    {"brand": "Enphase IQ Battery 10 (10.1kWh)", "capacity": 10.1},
-    {"brand": "SolarEdge Home Battery (9.7kWh)", "capacity": 9.7},
-    {"brand": "LG Chem RESU10H (9.8kWh)", "capacity": 9.8},
-    {"brand": "LG Chem RESU16H (16kWh)", "capacity": 16.0},
-    {"brand": "Pylontech US3000C (3.5kWh)", "capacity": 3.5},
-    {"brand": "Pylontech US5000 (4.8kWh)", "capacity": 4.8},
-    {"brand": "BYD Battery-Box Premium LVS (4kWh)", "capacity": 4.0},
-    {"brand": "Huawei LUNA2000 (5kWh)", "capacity": 5.0},
-    {"brand": "Alpha ESS SMILE-B3 (2.9kWh)", "capacity": 2.9},
-    {"brand": "Growatt ARK-2.5H-A1 (2.5kWh)", "capacity": 2.5},
-    {"brand": "Victron Energy Lithium (5kWh)", "capacity": 5.0},
-    {"brand": "Sonnen eco 8 (8kWh)", "capacity": 8.0},
-    {"brand": "Powerwall Alternative (10kWh)", "capacity": 10.0},
-    {"brand": "Generic Lithium Battery (5kWh)", "capacity": 5.0},
-    {"brand": "Other (specify capacity)", "capacity": 0}
-]
-
+# Database setup
 def init_db():
-    """Initialize the database"""
     try:
-        conn = sqlite3.connect('email_verification.db')
+        conn = sqlite3.connect('solar_verify.db')
         cursor = conn.cursor()
         
+        # Users table for email verification
         cursor.execute('''
-            CREATE TABLE IF NOT EXISTS email_verifications (
+            CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                email TEXT NOT NULL,
-                email_hash TEXT NOT NULL,
-                verification_code TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                verified BOOLEAN DEFAULT FALSE,
-                analysis_count INTEGER DEFAULT 0,
+                email TEXT UNIQUE NOT NULL,
+                email_hash TEXT UNIQUE NOT NULL,
+                verification_code TEXT,
+                is_verified BOOLEAN DEFAULT FALSE,
+                is_admin BOOLEAN DEFAULT FALSE,
                 gdpr_consent BOOLEAN DEFAULT FALSE,
-                consent_timestamp TEXT
+                consent_timestamp TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                last_verification_sent TEXT,
+                verification_attempts INTEGER DEFAULT 0,
+                analysis_count INTEGER DEFAULT 0
+            )
+        ''')
+        
+        # Analysis logs table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS analysis_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_email_hash TEXT,
+                system_size REAL,
+                has_battery BOOLEAN,
+                battery_brand TEXT,
+                battery_quantity INTEGER,
+                total_price REAL,
+                grade TEXT,
+                verdict TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         ''')
         
         conn.commit()
         conn.close()
         logger.info("✅ Database initialized successfully")
+        
     except Exception as e:
-        logger.error(f"❌ Database initialization error: {str(e)}")
+        logger.error(f"❌ Database initialization failed: {str(e)}")
 
-def safe_float_convert(value, default=0.0):
-    """Safely convert a value to float, handling empty strings and None"""
-    if value is None or value == '' or value == 'undefined':
-        return default
-    try:
-        return float(value)
-    except (ValueError, TypeError):
-        logger.warning(f"⚠️ Could not convert '{value}' to float, using default {default}")
-        return default
-
-def safe_int_convert(value, default=1):
-    """Safely convert a value to int, handling empty strings and None"""
-    if value is None or value == '' or value == 'undefined':
-        return default
-    try:
-        return int(value)
-    except (ValueError, TypeError):
-        logger.warning(f"⚠️ Could not convert '{value}' to int, using default {default}")
-        return default
+# Initialize database on startup
+init_db()
 
 def hash_email(email):
-    """Create a hash of the email for privacy"""
-    return hashlib.sha256(email.lower().encode()).hexdigest()
+    """Create a privacy-friendly hash of the email"""
+    return hashlib.sha256(email.lower().encode()).hexdigest()[:16]
 
 def generate_verification_code():
     """Generate a 6-digit verification code"""
     return ''.join(random.choices(string.digits, k=6))
 
-def is_admin_email(email):
-    """Check if email is admin"""
-    return email.lower() == ADMIN_EMAIL.lower()
+def validate_email(email):
+    """Enhanced email validation"""
+    if not email or '@' not in email:
+        return False
+    
+    # Basic regex validation
+    pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    if not re.match(pattern, email):
+        return False
+    
+    # Block common fake domains
+    fake_domains = ['test.com', 'example.com', 'fake.com', 'temp.com', '10minutemail.com']
+    domain = email.split('@')[1].lower()
+    if domain in fake_domains:
+        return False
+    
+    return True
+
+# Battery options with accurate pricing
+BATTERY_OPTIONS = [
+    {"brand": "Tesla Powerwall 3", "capacity": 13.5, "price_range": [7500, 8000]},
+    {"brand": "Tesla Powerwall 2", "capacity": 13.5, "price_range": [6500, 7500]},
+    {"brand": "Enphase IQ Battery 5P", "capacity": 5.0, "price_range": [3500, 4000]},
+    {"brand": "Enphase IQ Battery 10", "capacity": 10.1, "price_range": [6000, 6500]},
+    {"brand": "SolarEdge Home Battery", "capacity": 9.7, "price_range": [5500, 6000]},
+    {"brand": "LG Chem RESU10H", "capacity": 9.8, "price_range": [5000, 5500]},
+    {"brand": "LG Chem RESU16H", "capacity": 16.0, "price_range": [7000, 7500]},
+    {"brand": "Pylontech US3000C", "capacity": 3.5, "price_range": [1800, 2200]},
+    {"brand": "Pylontech US5000", "capacity": 4.8, "price_range": [2200, 2600]},
+    {"brand": "BYD Battery-Box Premium LVS", "capacity": 4.0, "price_range": [2000, 2400]},
+    {"brand": "Huawei LUNA2000", "capacity": 5.0, "price_range": [2800, 3200]},
+    {"brand": "Alpha ESS SMILE-B3", "capacity": 2.9, "price_range": [1600, 2000]},
+    {"brand": "Growatt ARK-2.5H-A1", "capacity": 2.5, "price_range": [1400, 1800]},
+    {"brand": "Victron Energy Lithium", "capacity": 5.0, "price_range": [2500, 3000]},
+    {"brand": "Sonnen eco 8", "capacity": 8.0, "price_range": [4500, 5000]},
+    {"brand": "Powerwall Alternative", "capacity": 10.0, "price_range": [4000, 5000]},
+    {"brand": "Generic Lithium Battery", "capacity": 5.0, "price_range": [2000, 3000]},
+    {"brand": "Other (specify capacity)", "capacity": 0, "price_range": [0, 0]}
+]
+
+@app.route('/api/health', methods=['GET'])
+def health_check():
+    return jsonify({
+        "status": "healthy",
+        "timestamp": datetime.datetime.now().isoformat(),
+        "version": "2.2.0-admin-testing-enabled",
+        "admin_emails": len(ADMIN_EMAILS)
+    })
 
 @app.route('/api/battery-options', methods=['GET'])
 def get_battery_options():
-    """Get available battery options"""
-    try:
-        return jsonify({"battery_options": BATTERY_OPTIONS})
-    except Exception as e:
-        logger.error(f"❌ Error getting battery options: {str(e)}")
-        return jsonify({"error": "Failed to get battery options"}), 500
+    return jsonify({"battery_options": BATTERY_OPTIONS})
 
 @app.route('/api/send-verification', methods=['POST'])
 def send_verification():
-    """Send email verification code"""
     try:
         data = request.get_json()
         email = data.get('email', '').strip().lower()
         gdpr_consent = data.get('gdpr_consent', False)
-        consent_timestamp = data.get('consent_timestamp', '')
         
-        if not email:
-            return jsonify({"error": "Email is required"}), 400
+        if not validate_email(email):
+            return jsonify({"error": "Invalid email address"}), 400
         
-        # Check if admin
-        if is_admin_email(email):
-            logger.info(f"👑 Admin email detected: {email}")
-            return jsonify({
-                "message": "Admin verification bypassed",
-                "is_admin": True
-            })
+        if not gdpr_consent:
+            return jsonify({"error": "GDPR consent is required"}), 400
         
-        # Generate verification code
-        verification_code = generate_verification_code()
-        email_hash = hash_email(email)
+        # Check if admin email
+        admin_status = is_admin_email(email)
+        if admin_status:
+            logger.info(f"👑 ADMIN EMAIL DETECTED: {email}")
         
-        # Store in database
-        conn = sqlite3.connect('email_verification.db')
+        conn = sqlite3.connect('solar_verify.db')
         cursor = conn.cursor()
         
-        # Check if email already exists
-        cursor.execute('SELECT id, verified FROM email_verifications WHERE email_hash = ?', (email_hash,))
-        existing = cursor.fetchone()
+        email_hash = hash_email(email)
+        verification_code = generate_verification_code()
+        current_time = datetime.datetime.now().isoformat()
         
-        if existing:
-            # Update existing record
-            cursor.execute('''
-                UPDATE email_verifications 
-                SET verification_code = ?, created_at = CURRENT_TIMESTAMP, verified = FALSE
-                WHERE email_hash = ?
-            ''', (verification_code, email_hash))
-        else:
-            # Insert new record
-            cursor.execute('''
-                INSERT INTO email_verifications 
-                (email, email_hash, verification_code, gdpr_consent, consent_timestamp)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (email, email_hash, verification_code, gdpr_consent, consent_timestamp))
+        # Check rate limiting (3 attempts per hour)
+        cursor.execute('''
+            SELECT last_verification_sent, verification_attempts 
+            FROM users WHERE email = ?
+        ''', (email,))
+        
+        result = cursor.fetchone()
+        if result:
+            last_sent, attempts = result
+            if last_sent:
+                last_sent_time = datetime.datetime.fromisoformat(last_sent)
+                time_diff = datetime.datetime.now() - last_sent_time
+                
+                if time_diff.total_seconds() < 3600 and attempts >= 3:  # 1 hour limit
+                    conn.close()
+                    return jsonify({"error": "Too many verification attempts. Please try again later."}), 429
+        
+        # Insert or update user
+        cursor.execute('''
+            INSERT OR REPLACE INTO users 
+            (email, email_hash, verification_code, is_verified, is_admin, gdpr_consent, consent_timestamp, last_verification_sent, verification_attempts)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT verification_attempts FROM users WHERE email = ?), 0) + 1)
+        ''', (email, email_hash, verification_code, admin_status, admin_status, gdpr_consent, current_time, current_time, email))
         
         conn.commit()
         conn.close()
         
-        # In production, send actual email here
+        # Log verification code (simulating email sending)
         logger.info(f"🔑 VERIFICATION CODE for {email}: {verification_code}")
+        if admin_status:
+            logger.info(f"👑 ADMIN ACCESS GRANTED for {email}")
+        logger.info(f"📧 Email would be sent to: {email}")
+        logger.info(f"📝 Subject: Solar✓erify - Verify Your Email Address")
         
         return jsonify({
-            "message": "Verification code sent",
-            "is_admin": False
+            "message": "Verification code sent successfully",
+            "is_admin": admin_status
         })
         
     except Exception as e:
         logger.error(f"❌ Send verification error: {str(e)}")
-        return jsonify({"error": "Failed to send verification"}), 500
+        return jsonify({"error": "Failed to send verification code"}), 500
 
 @app.route('/api/verify-email', methods=['POST'])
 def verify_email():
-    """Verify email with code"""
     try:
         data = request.get_json()
         email = data.get('email', '').strip().lower()
@@ -180,52 +212,51 @@ def verify_email():
         if not email or not verification_code:
             return jsonify({"error": "Email and verification code are required"}), 400
         
-        # Check if admin
-        if is_admin_email(email):
-            logger.info(f"👑 Admin email verification bypassed: {email}")
-            return jsonify({
-                "message": "Admin verification successful",
-                "is_admin": True
-            })
+        conn = sqlite3.connect('solar_verify.db')
+        cursor = conn.cursor()
         
         email_hash = hash_email(email)
         
-        conn = sqlite3.connect('email_verification.db')
-        cursor = conn.cursor()
-        
         # Check verification code
         cursor.execute('''
-            SELECT id, created_at FROM email_verifications 
-            WHERE email_hash = ? AND verification_code = ?
-        ''', (email_hash, verification_code))
+            SELECT verification_code, is_verified, is_admin
+            FROM users WHERE email = ?
+        ''', (email,))
         
         result = cursor.fetchone()
-        
         if not result:
+            conn.close()
+            return jsonify({"error": "User not found"}), 404
+        
+        stored_code, is_verified, is_admin = result
+        
+        if is_verified:
+            conn.close()
+            logger.info(f"✅ Email already verified for {email_hash}")
+            return jsonify({
+                "message": "Email verified successfully",
+                "is_admin": is_admin
+            })
+        
+        if stored_code != verification_code:
             conn.close()
             return jsonify({"error": "Invalid verification code"}), 400
         
-        # Check if code is expired (10 minutes)
-        created_at = datetime.fromisoformat(result[1])
-        if datetime.now() - created_at > timedelta(minutes=10):
-            conn.close()
-            return jsonify({"error": "Verification code expired"}), 400
-        
         # Mark as verified
         cursor.execute('''
-            UPDATE email_verifications 
-            SET verified = TRUE 
-            WHERE email_hash = ?
-        ''', (email_hash,))
+            UPDATE users SET is_verified = TRUE WHERE email = ?
+        ''', (email,))
         
         conn.commit()
         conn.close()
         
-        logger.info(f"✅ Email verified successfully: {email}")
+        logger.info(f"✅ Email verified for {email_hash}")
+        if is_admin:
+            logger.info(f"👑 ADMIN VERIFIED: {email}")
         
         return jsonify({
             "message": "Email verified successfully",
-            "is_admin": False
+            "is_admin": is_admin
         })
         
     except Exception as e:
@@ -234,147 +265,185 @@ def verify_email():
 
 @app.route('/api/analyze-quote', methods=['POST'])
 def analyze_quote():
-    """Analyze solar quote with enhanced validation"""
     try:
         data = request.get_json()
-        logger.info(f"📊 Received analysis request: {data}")
         
-        # Extract and validate data with safe conversion
-        system_size = safe_float_convert(data.get('system_size'))
-        total_price = safe_float_convert(data.get('total_price'))
+        # Extract form data
+        system_size = float(data.get('system_size', 0))
+        total_price = float(data.get('total_price', 0))
         has_battery = data.get('has_battery', False)
         battery_brand = data.get('battery_brand', '')
-        battery_quantity = safe_int_convert(data.get('battery_quantity'), 1)
-        battery_capacity = safe_float_convert(data.get('battery_capacity'))
+        battery_quantity = int(data.get('battery_quantity', 1))
+        battery_capacity = float(data.get('battery_capacity', 0))
         user_email = data.get('user_email', '').strip().lower()
         
         # Validation
-        if system_size <= 0:
-            return jsonify({"error": "System size must be greater than 0"}), 400
+        if system_size <= 0 or total_price <= 0:
+            return jsonify({"error": "Invalid system size or price"}), 400
         
-        if total_price <= 0:
-            return jsonify({"error": "Total price must be greater than 0"}), 400
-        
-        # Check if admin
-        is_admin = is_admin_email(user_email)
+        # Check user analysis limits (unless admin)
         analysis_count = 0
+        is_admin = False
+        user_verified = False
         
-        if not is_admin and user_email:
-            # Check analysis limits for regular users
-            email_hash = hash_email(user_email)
+        if user_email:
+            is_admin = is_admin_email(user_email)
             
-            conn = sqlite3.connect('email_verification.db')
-            cursor = conn.cursor()
-            
-            cursor.execute('''
-                SELECT verified, analysis_count FROM email_verifications 
-                WHERE email_hash = ?
-            ''', (email_hash,))
-            
-            result = cursor.fetchone()
-            
-            if result:
-                verified, current_count = result
-                analysis_count = current_count + 1
+            if not is_admin:  # Only check limits for non-admin users
+                conn = sqlite3.connect('solar_verify.db')
+                cursor = conn.cursor()
                 
-                # Update analysis count
+                email_hash = hash_email(user_email)
                 cursor.execute('''
-                    UPDATE email_verifications 
-                    SET analysis_count = ? 
-                    WHERE email_hash = ?
-                ''', (analysis_count, email_hash))
+                    SELECT analysis_count, is_verified FROM users WHERE email = ?
+                ''', (user_email,))
+                
+                result = cursor.fetchone()
+                if result:
+                    analysis_count, user_verified = result
+                    
+                    # Increment analysis count
+                    cursor.execute('''
+                        UPDATE users SET analysis_count = analysis_count + 1 WHERE email = ?
+                    ''', (user_email,))
+                    
+                    conn.commit()
+                    analysis_count += 1
+                else:
+                    # Anonymous user - first analysis
+                    analysis_count = 1
+                
+                conn.close()
+        else:
+            # Anonymous user - first analysis
+            analysis_count = 1
+        
+        # Calculate pricing components
+        installation_cost = 2000  # Base installation cost
+        
+        # Battery cost calculation
+        battery_cost = 0
+        if has_battery and battery_brand and battery_brand != "Other (specify capacity)":
+            battery_info = next((b for b in BATTERY_OPTIONS if b["brand"] == battery_brand), None)
+            if battery_info:
+                avg_battery_price = sum(battery_info["price_range"]) / 2
+                battery_cost = avg_battery_price * battery_quantity
+            else:
+                # Fallback for unknown batteries
+                battery_cost = 3000 * battery_quantity
+        elif has_battery and battery_capacity > 0:
+            # Custom battery capacity
+            battery_cost = battery_capacity * 500  # £500 per kWh estimate
+        
+        # Solar panel cost (remaining after battery and installation)
+        solar_cost = max(0, total_price - battery_cost - installation_cost)
+        price_per_kw = solar_cost / system_size if system_size > 0 else 0
+        
+        # Grading logic for solar panels
+        if price_per_kw <= 600:
+            grade = 'A'
+            verdict = "Excellent value for solar panels"
+        elif price_per_kw <= 800:
+            grade = 'B'
+            verdict = "Good value for solar panels"
+        elif price_per_kw <= 1000:
+            grade = 'C'
+            verdict = "Fair pricing for solar panels"
+        elif price_per_kw <= 1200:
+            grade = 'D'
+            verdict = "Above average pricing"
+        else:
+            grade = 'F'
+            verdict = "Overpriced - consider other quotes"
+        
+        # Enhanced verdict with battery consideration
+        if has_battery and battery_cost > 0:
+            if battery_brand == "Tesla Powerwall 3":
+                if battery_cost <= 8000 * battery_quantity:
+                    verdict += ". Excellent battery value"
+                else:
+                    verdict += ". Battery pricing is high"
+            elif battery_cost <= 3000 * battery_quantity:
+                verdict += ". Good battery pricing"
+            else:
+                verdict += ". Consider battery alternatives"
+        
+        # Calculate remaining analyses for non-admin users
+        remaining_analyses = "unlimited" if is_admin else max(0, 3 - analysis_count)
+        
+        # Log analysis
+        if user_email:
+            try:
+                conn = sqlite3.connect('solar_verify.db')
+                cursor = conn.cursor()
+                
+                email_hash = hash_email(user_email)
+                cursor.execute('''
+                    INSERT INTO analysis_logs 
+                    (user_email_hash, system_size, has_battery, battery_brand, battery_quantity, total_price, grade, verdict)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (email_hash, system_size, has_battery, battery_brand, battery_quantity, total_price, grade, verdict))
                 
                 conn.commit()
-            else:
-                analysis_count = 1
-            
-            conn.close()
+                conn.close()
+            except Exception as e:
+                logger.error(f"❌ Failed to log analysis: {str(e)}")
         
-        # Calculate price per kW
-        price_per_kw = total_price / system_size if system_size > 0 else 0
-        
-        # Enhanced grading logic
-        grade = "C"
-        verdict = "Standard pricing"
-        
-        # Solar panel pricing analysis (£800-£1200 per kW is fair)
-        if price_per_kw < 800:
-            grade = "A+"
-            verdict = "Excellent value - very competitive pricing"
-        elif price_per_kw < 1000:
-            grade = "A"
-            verdict = "Good value - fair pricing"
-        elif price_per_kw < 1200:
-            grade = "B"
-            verdict = "Reasonable pricing"
-        elif price_per_kw < 1500:
-            grade = "C"
-            verdict = "Average pricing - room for negotiation"
+        logger.info(f"📊 Analysis completed: {system_size}kW, £{total_price}, Grade: {grade}")
+        if is_admin:
+            logger.info(f"👑 ADMIN ANALYSIS - Unlimited access")
         else:
-            grade = "D"
-            verdict = "Expensive - consider getting more quotes"
-        
-        # Battery analysis if included
-        if has_battery and battery_brand:
-            # Find battery capacity from brand
-            if battery_capacity == 0:
-                for battery in BATTERY_OPTIONS:
-                    if battery["brand"] == battery_brand:
-                        battery_capacity = battery["capacity"]
-                        break
-            
-            total_capacity = battery_capacity * battery_quantity
-            
-            # Adjust verdict for battery pricing
-            if "Tesla Powerwall 3" in battery_brand:
-                if total_price < 15000:  # Good deal for Tesla + solar
-                    verdict += " with excellent battery value"
-                elif total_price < 20000:
-                    verdict += " with fair battery pricing"
-                else:
-                    verdict += " but battery seems expensive"
-        
-        logger.info(f"✅ Analysis completed - Grade: {grade}, User: {user_email}, Admin: {is_admin}")
+            logger.info(f"📈 User analyses: {analysis_count}/3, Remaining: {remaining_analyses}")
         
         return jsonify({
             "grade": grade,
             "verdict": verdict,
-            "price_per_kw": f"{price_per_kw:.0f}",
-            "analysis_count": analysis_count,
-            "is_admin": is_admin,
+            "price_per_kw": round(price_per_kw, 2),
             "system_details": {
-                "system_size": f"{system_size}kW",
-                "total_price": f"£{total_price:,.0f}",
+                "system_size": system_size,
+                "total_price": total_price,
                 "has_battery": has_battery,
-                "battery_info": battery_brand if has_battery else "No battery",
-                "total_capacity": f"{battery_capacity * battery_quantity} kWh" if has_battery else "N/A"
-            }
+                "battery_info": f"{battery_quantity}x {battery_brand}" if has_battery else None,
+                "total_capacity": f"{battery_quantity * (battery_capacity if battery_capacity > 0 else next((b['capacity'] for b in BATTERY_OPTIONS if b['brand'] == battery_brand), 0))}kWh" if has_battery else None
+            },
+            "analysis_count": analysis_count,
+            "remaining_analyses": remaining_analyses,
+            "is_admin": is_admin,
+            "user_verified": user_verified
         })
         
     except Exception as e:
         logger.error(f"❌ Analysis error: {str(e)}")
-        return jsonify({"error": f"Analysis failed: {str(e)}"}), 500
+        return jsonify({"error": "Analysis failed"}), 500
 
-@app.route('/health', methods=['GET'])
-def health_check():
-    """Health check endpoint"""
-    return jsonify({"status": "healthy", "timestamp": datetime.now().isoformat()})
-
-@app.route('/', methods=['GET'])
-def root():
-    """Root endpoint"""
-    return jsonify({
-        "message": "Solar Quote Analyzer API",
-        "version": "2.0",
-        "endpoints": [
-            "/api/battery-options",
-            "/api/send-verification", 
-            "/api/verify-email",
-            "/api/analyze-quote",
-            "/health"
-        ]
-    })
+@app.route('/api/admin/reset-user', methods=['POST'])
+def admin_reset_user():
+    """Admin endpoint to reset user analysis count for testing"""
+    try:
+        data = request.get_json()
+        admin_email = data.get('admin_email', '').strip().lower()
+        target_email = data.get('target_email', '').strip().lower()
+        
+        if not is_admin_email(admin_email):
+            return jsonify({"error": "Unauthorized - Admin access required"}), 403
+        
+        conn = sqlite3.connect('solar_verify.db')
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            UPDATE users SET analysis_count = 0 WHERE email = ?
+        ''', (target_email,))
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"👑 ADMIN RESET: {admin_email} reset analysis count for {target_email}")
+        
+        return jsonify({"message": f"Analysis count reset for {target_email}"})
+        
+    except Exception as e:
+        logger.error(f"❌ Admin reset error: {str(e)}")
+        return jsonify({"error": "Reset failed"}), 500
 
 if __name__ == '__main__':
-    init_db()
-    app.run(host='0.0.0.0', port=8080, debug=False)
+    app.run(host='0.0.0.0', port=8000, debug=True)
