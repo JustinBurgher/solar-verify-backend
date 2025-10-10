@@ -432,14 +432,30 @@ def analyze_quote():
             if field not in data:
                 return jsonify({'error': f'Missing required field: {field}'}), 400
         
-        system_size = float(data['system_size'])
-        total_price = float(data['total_price'])
+        # Parse and validate numeric values
+        try:
+            system_size = float(data['system_size'])
+            total_price = float(data['total_price'])
+        except (ValueError, TypeError) as e:
+            return jsonify({'error': f'Invalid numeric value: {str(e)}'}), 400
+        
+        # Validate system_size is not zero to prevent division by zero
+        if system_size <= 0:
+            return jsonify({'error': 'System size must be greater than 0'}), 400
+        
+        if total_price <= 0:
+            return jsonify({'error': 'Total price must be greater than 0'}), 400
+        
         has_battery = data.get('has_battery', False)
         battery_brand = data.get('battery_brand', '')
-        battery_quantity = int(data.get('battery_quantity', 0))
-        battery_capacity = float(data.get('battery_capacity', 0))
+        try:
+            battery_quantity = int(data.get('battery_quantity', 0))
+            battery_capacity = float(data.get('battery_capacity', 0))
+        except (ValueError, TypeError):
+            battery_quantity = 0
+            battery_capacity = 0
         
-        # Calculate price per kW
+        # Calculate price per kW (now safe from division by zero)
         price_per_kw = total_price / system_size
         
         # Determine grade based on price per kW
