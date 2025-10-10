@@ -1,290 +1,465 @@
-from flask import Flask, request, jsonify
-from flask_cors import CORS
-import sqlite3
+import os
 import random
 import string
-from datetime import datetime
-import os
+import jwt
+from datetime import datetime, timedelta
+from flask import Flask, jsonify, request
+from flask_cors import CORS
+from sendgrid import SendGridAPIClient
+from sendgrid.helpers.mail import Mail, Attachment, FileContent, FileName, FileType, Disposition
+import base64
 
 app = Flask(__name__)
-CORS(app)
+CORS(app)  # Enable CORS for all routes
 
-# Admin email configuration – admin bypasses verification and analysis limits
-ADMIN_EMAIL = "justinburgher@live.co.uk"
+# Configuration
+JWT_SECRET = os.environ.get('JWT_SECRET', 'your-secret-key-change-in-production')
+FRONTEND_URL = os.environ.get('FRONTEND_URL', 'https://solarverify.co.uk')
 
-def init_database() -> None:
-    """Initialise the SQLite database and create required tables."""
-    conn = sqlite3.connect('solar_analyzer.db')
-    cur = conn.cursor()
-    # Table for email verification codes
-    cur.execute("""
-      CREATE TABLE IF NOT EXISTS email_verifications (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        email TEXT NOT NULL,
-        code TEXT NOT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        verified BOOLEAN DEFAULT FALSE
-      )
-    """)
-    # Table for user analysis counts and verification status
-    cur.execute("""
-      CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        email TEXT UNIQUE NOT NULL,
-        analysis_count INTEGER DEFAULT 0,
-        verified BOOLEAN DEFAULT FALSE,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    """)
-    conn.commit()
-    conn.close()
+# In-memory storage for used tokens (use Redis or database in production)
+used_tokens = set()
 
-# Initialise on import
-init_database()
+# UK Solar Market Data (September 2025)
+SOLAR_PRICING_TIERS = {
+    'A': {'min': 1400, 'max': 1700, 'description': 'Excellent value - well below market average'},
+    'B': {'min': 1700, 'max': 2000, 'description': 'Good value - competitive pricing'},
+    'C': {'min': 2000, 'max': 2300, 'description': 'Fair value - around market average'},
+    'D': {'min': 2300, 'max': 2600, 'description': 'Above average - consider negotiating'},
+    'F': {'min': 2600, 'max': 5000, 'description': 'Overpriced - significant savings possible'}
+}
 
-# Battery options – 18 items plus an “Other” option
-BATTERY_OPTIONS = [
-    {"brand": "Tesla Powerwall 3", "capacity": 13.5, "price_range": [7500, 8000]},
-    {"brand": "Enphase IQ Battery 5P", "capacity": 5.0, "price_range": [4500, 5000]},
-    {"brand": "LG Chem RESU10H", "capacity": 9.8, "price_range": [5500, 6000]},
-    {"brand": "Pylontech US3000C", "capacity": 3.55, "price_range": [1800, 2200]},
-    {"brand": "BYD Battery-Box Premium LVS", "capacity": 4.0, "price_range": [2500, 3000]},
-    {"brand": "Solax Triple Power T58", "capacity": 5.8, "price_range": [3500, 4000]},
-    {"brand": "Alpha ESS SMILE-B3", "capacity": 2.9, "price_range": [2000, 2500]},
-    {"brand": "Huawei LUNA2000", "capacity": 5.0, "price_range": [3000, 3500]},
-    {"brand": "SolarEdge Energy Bank", "capacity": 9.7, "price_range": [5000, 5500]},
-    {"brand": "Victron Energy Lithium", "capacity": 5.12, "price_range": [3500, 4000]},
-    {"brand": "Fronius Solar Battery", "capacity": 4.5, "price_range": [3000, 3500]},
-    {"brand": "Growatt ARK XH", "capacity": 2.56, "price_range": [1500, 2000]},
-    {"brand": "Goodwe Lynx Home U", "capacity": 3.3, "price_range": [2200, 2700]},
-    {"brand": "Solis RAI", "capacity": 5.1, "price_range": [3200, 3700]},
-    {"brand": "Moixa Smart Battery", "capacity": 2.0, "price_range": [2500, 3000]},
-    {"brand": "Powervault P4", "capacity": 4.1, "price_range": [3500, 4000]},
-    {"brand": "Sonnen ecoLinx", "capacity": 12.0, "price_range": [12000, 15000]},
-    {"brand": "Other", "capacity": 0, "price_range": [0, 0]},
-]
+BATTERY_BRANDS = {
+    'Tesla Powerwall': {'capacity': 13.5, 'efficiency': 0.9},
+    'Enphase': {'capacity': 10.1, 'efficiency': 0.89},
+    'SolarEdge': {'capacity': 9.7, 'efficiency': 0.94},
+    'Pylontech': {'capacity': 7.4, 'efficiency': 0.95},
+    'Fox Battery': {'capacity': 13.8, 'efficiency': 0.92},
+    'GivEnergy': {'capacity': 9.5, 'efficiency': 0.93},
+    'Other': {'capacity': 10.0, 'efficiency': 0.9}  # Default for custom
+}
 
-def safe_float(value, default=0.0) -> float:
-    """Convert to float or return default on failure."""
+def generate_magic_link_token(email, analysis_data):
+    """Generate a JWT token for magic link authentication"""
+    # Generate unique token ID to prevent replay attacks
+    jti = ''.join(random.choices(string.ascii_letters + string.digits, k=16))
+    
+    payload = {
+        'email': email,
+        'analysis_data': analysis_data,
+        'exp': datetime.utcnow() + timedelta(minutes=10),  # 10 minute expiration
+        'iat': datetime.utcnow(),
+        'jti': jti  # JWT ID for single-use enforcement
+    }
+    
+    token = jwt.encode(payload, JWT_SECRET, algorithm='HS256')
+    return token
+
+def verify_magic_link_token(token):
+    """Verify and decode JWT token"""
     try:
-        return float(value) if value not in (None, '', 'undefined') else default
-    except (ValueError, TypeError):
-        return default
+        # Check if token has already been used
+        if token in used_tokens:
+            return None, 'Token has already been used'
+        
+        # Decode and verify token
+        payload = jwt.decode(token, JWT_SECRET, algorithms=['HS256'])
+        
+        # Mark token as used
+        used_tokens.add(token)
+        
+        return payload, None
+    except jwt.ExpiredSignatureError:
+        return None, 'Token has expired'
+    except jwt.InvalidTokenError:
+        return None, 'Invalid token'
 
-def safe_int(value, default=0) -> int:
-    """Convert to int or return default on failure."""
+def send_magic_link_email(email, token):
+    """Send magic link via SendGrid"""
     try:
-        return int(value) if value not in (None, '', 'undefined') else default
-    except (ValueError, TypeError):
-        return default
+        magic_link = f"{FRONTEND_URL}/verify?token={token}"
+        
+        message = Mail(
+            from_email='justinburgher@solarverify.co.uk',
+            to_emails=email,
+            subject='Verify Your Email - Solar Verify',
+            html_content=f'''
+            <html>
+            <head>
+                <style>
+                    body {{
+                        font-family: Arial, sans-serif;
+                        line-height: 1.6;
+                        color: #333;
+                    }}
+                    .container {{
+                        max-width: 600px;
+                        margin: 0 auto;
+                        padding: 20px;
+                    }}
+                    .header {{
+                        background: linear-gradient(135deg, #14b8a6 0%, #3b82f6 100%);
+                        color: white;
+                        padding: 30px;
+                        text-align: center;
+                        border-radius: 8px 8px 0 0;
+                    }}
+                    .content {{
+                        background: #f9f9f9;
+                        padding: 30px;
+                        border-radius: 0 0 8px 8px;
+                    }}
+                    .button {{
+                        display: inline-block;
+                        background: #14b8a6;
+                        color: white;
+                        padding: 15px 40px;
+                        text-decoration: none;
+                        border-radius: 5px;
+                        font-weight: bold;
+                        margin: 20px 0;
+                    }}
+                    .button:hover {{
+                        background: #0d9488;
+                    }}
+                    .footer {{
+                        text-align: center;
+                        margin-top: 20px;
+                        color: #888;
+                        font-size: 12px;
+                    }}
+                    .note {{
+                        background: #fff3cd;
+                        border-left: 4px solid #ffc107;
+                        padding: 15px;
+                        margin: 20px 0;
+                    }}
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <div class="header">
+                        <h1>Solar✓erify</h1>
+                        <p>Verify your email to access your results</p>
+                    </div>
+                    <div class="content">
+                        <h2>Welcome to Solar Verify!</h2>
+                        <p>Thank you for using our solar quote analysis service. Click the button below to verify your email and access your free analysis results and Solar Buyer's Guide:</p>
+                        
+                        <div style="text-align: center;">
+                            <a href="{magic_link}" class="button">Verify Email & Get My Results</a>
+                        </div>
+                        
+                        <div class="note">
+                            <strong>⏱️ This link expires in 10 minutes</strong><br>
+                            For security, this is a one-time link that can only be used once.
+                        </div>
+                        
+                        <p>If the button doesn't work, copy and paste this link into your browser:</p>
+                        <p style="word-break: break-all; color: #14b8a6;">{magic_link}</p>
+                        
+                        <p style="margin-top: 30px; color: #666;">If you didn't request this email, please ignore it.</p>
+                    </div>
+                    <div class="footer">
+                        <p>© 2024 Solar✓erify Ltd. All rights reserved.</p>
+                        <p>Email: justinburgher@solarverify.co.uk | Website: www.solarverify.co.uk</p>
+                    </div>
+                </div>
+            </body>
+            </html>
+            '''
+        )
+        
+        sg = SendGridAPIClient(os.environ.get('SENDGRID_API_KEY'))
+        response = sg.send(message)
+        return response.status_code == 202
+    except Exception as e:
+        print(f"Error sending email: {str(e)}")
+        return False
 
-def is_admin_email(email: str) -> bool:
-    return email and email.lower().strip() == ADMIN_EMAIL.lower()
-
-def get_user_analysis_count(email: str) -> int:
-    """Return analysis count for a non‑admin user."""
-    if is_admin_email(email):
-        return 0
-    conn = sqlite3.connect('solar_analyzer.db')
-    cur = conn.cursor()
-    cur.execute('SELECT analysis_count FROM users WHERE email = ?', (email,))
-    row = cur.fetchone()
-    conn.close()
-    return row[0] if row else 0
-
-def increment_user_analysis_count(email: str) -> None:
-    """Increment analysis count for non‑admin users."""
-    if is_admin_email(email):
-        return
-    conn = sqlite3.connect('solar_analyzer.db')
-    cur = conn.cursor()
-    cur.execute("""
-      INSERT OR REPLACE INTO users (email, analysis_count, verified)
-      VALUES (
-        ?,
-        COALESCE((SELECT analysis_count FROM users WHERE email = ?), 0) + 1,
-        COALESCE((SELECT verified FROM users WHERE email = ?), 0)
-      )
-    """, (email, email, email))
-    conn.commit()
-    conn.close()
-
-def generate_verification_code() -> str:
-    return ''.join(random.choices(string.digits, k=6))
-
-# Endpoints
-
-@app.route("/api/battery-options")
-def battery_options():
-    return jsonify({"battery_options": BATTERY_OPTIONS})
-
-@app.route("/api/send-verification", methods=["POST"])
-def send_verification():
+def send_pdf_email(email, analysis_data):
+    """Send PDF guide via email after verification"""
     try:
-        data = request.get_json() or {}
-        email = (data.get("email") or "").strip().lower()
+        # Read the PDF file
+        pdf_path = os.path.join(os.path.dirname(__file__), 'solar_verify_professional_guide_final.pdf')
+        with open(pdf_path, 'rb') as f:
+            pdf_data = f.read()
+        
+        # Encode PDF to base64
+        encoded_pdf = base64.b64encode(pdf_data).decode()
+        
+        message = Mail(
+            from_email='justinburgher@solarverify.co.uk',
+            to_emails=email,
+            subject='Your Solar Quote Analysis & Free Buyer\'s Guide',
+            html_content=f'''
+            <html>
+            <head>
+                <style>
+                    body {{
+                        font-family: Arial, sans-serif;
+                        line-height: 1.6;
+                        color: #333;
+                    }}
+                    .container {{
+                        max-width: 600px;
+                        margin: 0 auto;
+                        padding: 20px;
+                    }}
+                    .header {{
+                        background: linear-gradient(135deg, #14b8a6 0%, #3b82f6 100%);
+                        color: white;
+                        padding: 30px;
+                        text-align: center;
+                        border-radius: 8px 8px 0 0;
+                    }}
+                    .content {{
+                        background: #f9f9f9;
+                        padding: 30px;
+                        border-radius: 0 0 8px 8px;
+                    }}
+                    .grade {{
+                        font-size: 48px;
+                        font-weight: bold;
+                        text-align: center;
+                        color: #14b8a6;
+                        margin: 20px 0;
+                    }}
+                    .analysis-box {{
+                        background: white;
+                        padding: 20px;
+                        border-radius: 8px;
+                        margin: 20px 0;
+                    }}
+                    .footer {{
+                        text-align: center;
+                        margin-top: 20px;
+                        color: #888;
+                        font-size: 12px;
+                    }}
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <div class="header">
+                        <h1>Solar✓erify</h1>
+                        <p>Your Solar Quote Analysis Results</p>
+                    </div>
+                    <div class="content">
+                        <h2>Your Quote Grade</h2>
+                        <div class="grade">Grade {analysis_data['grade']}</div>
+                        <div class="analysis-box">
+                            <p><strong>System Size:</strong> {analysis_data['analysis']['system_size']}kW</p>
+                            <p><strong>Total Price:</strong> £{analysis_data['analysis']['total_price']:,.0f}</p>
+                            <p><strong>Price per kW:</strong> £{analysis_data['analysis']['price_per_kw']:.2f}</p>
+                            <p><strong>Verdict:</strong> {analysis_data['verdict']}</p>
+                        </div>
+                        <h3>📄 Your Free Solar Buyer's Guide</h3>
+                        <p>We've attached "The Complete Solar Quote Buyer's Guide" to this email. This comprehensive guide will help you:</p>
+                        <ul>
+                            <li>Identify fair pricing and avoid overpriced quotes</li>
+                            <li>Recognize quality equipment vs poor components</li>
+                            <li>Spot installer red flags and warning signs</li>
+                            <li>Negotiate better deals and protect your investment</li>
+                        </ul>
+                        <h3>🚀 Want More Detailed Analysis?</h3>
+                        <p>Upgrade to our Premium Analysis (£9.99) for:</p>
+                        <ul>
+                            <li>15+ page detailed PDF report</li>
+                            <li>Component-by-component breakdown</li>
+                            <li>Installer reputation check</li>
+                            <li>Personalized negotiation strategies</li>
+                            <li>Direct access to solar experts</li>
+                        </ul>
+                        <p style="text-align: center; margin-top: 30px;">
+                            <a href="{FRONTEND_URL}/upgrade" style="background: #14b8a6; color: white; padding: 15px 30px; text-decoration: none; border-radius: 5px; display: inline-block;">Upgrade to Premium</a>
+                        </p>
+                    </div>
+                    <div class="footer">
+                        <p>© 2024 Solar✓erify Ltd. All rights reserved.</p>
+                        <p>Email: justinburgher@solarverify.co.uk | Website: www.solarverify.co.uk</p>
+                    </div>
+                </div>
+            </body>
+            </html>
+            '''
+        )
+        
+        # Attach PDF
+        attachment = Attachment()
+        attachment.file_content = FileContent(encoded_pdf)
+        attachment.file_type = FileType('application/pdf')
+        attachment.file_name = FileName('Solar_Buyers_Guide.pdf')
+        attachment.disposition = Disposition('attachment')
+        message.attachment = attachment
+        
+        sg = SendGridAPIClient(os.environ.get('SENDGRID_API_KEY'))
+        response = sg.send(message)
+        return response.status_code == 202
+    except Exception as e:
+        print(f"Error sending PDF email: {str(e)}")
+        return False
+
+@app.route('/')
+def home():
+    """Basic home page"""
+    return jsonify({
+        'service': 'Solar Verify Analysis API',
+        'status': 'operational',
+        'version': '2.0.0 - Magic Link',
+        'endpoints': {
+            'health': '/api/health',
+            'analyze': '/api/analyze-quote',
+            'send_magic_link': '/api/send-magic-link',
+            'verify_token': '/api/verify-token'
+        }
+    })
+
+@app.route('/api/health', methods=['GET'])
+def health_check():
+    """Health check endpoint"""
+    return jsonify({
+        'status': 'healthy',
+        'service': 'Solar Verify Analysis API',
+        'timestamp': datetime.now().isoformat()
+    })
+
+@app.route('/api/send-magic-link', methods=['POST'])
+def send_magic_link():
+    """Send magic link to user's email"""
+    try:
+        data = request.get_json()
+        email = data.get('email')
+        
         if not email:
-            return jsonify({"success": False, "message": "Email is required"}), 400
-        if is_admin_email(email):
-            return jsonify({"success": True, "message": "Admin verification bypassed", "is_admin": True})
-        code = generate_verification_code()
-        conn = sqlite3.connect('solar_analyzer.db')
-        cur = conn.cursor()
-        cur.execute("DELETE FROM email_verifications WHERE email = ?", (email,))
-        cur.execute("""
-          INSERT INTO email_verifications (email, code, created_at, verified)
-          VALUES (?, ?, ?, FALSE)
-        """, (email, code, datetime.now()))
-        conn.commit()
-        conn.close()
-        print(f"[Verification] {email} → {code}")
-        return jsonify({"success": True, "message": f"Verification code sent to {email}", "is_admin": False})
-    except Exception as exc:
-        print(f"Error sending code: {exc}")
-        return jsonify({"success": False, "message": "Failed to send verification code"}), 500
-
-@app.route("/api/verify-email", methods=["POST"])
-def verify_email():
-    try:
-        data = request.get_json() or {}
-        email = (data.get("email") or "").strip().lower()
-        code = (data.get("verification_code") or data.get("code") or "").strip()
-        if not email or not code:
-            return jsonify({"success": False, "message": "Email and verification code are required"}), 400
-        if is_admin_email(email):
-            return jsonify({"success": True, "message": "Admin verification successful", "is_admin": True})
-        conn = sqlite3.connect('solar_analyzer.db')
-        cur = conn.cursor()
-        cur.execute("""
-          SELECT id FROM email_verifications
-          WHERE email = ? AND code = ? AND verified = FALSE
-            AND created_at > datetime('now', '-10 minutes')
-        """, (email, code))
-        row = cur.fetchone()
-        if not row:
-            conn.close()
-            return jsonify({"success": False, "message": "Invalid or expired verification code"}), 400
-        # Mark the code as verified
-        cur.execute("UPDATE email_verifications SET verified = TRUE WHERE email = ? AND code = ?", (email, code))
-        # Mark user as verified
-        cur.execute("""
-          INSERT OR REPLACE INTO users (email, analysis_count, verified)
-          VALUES (
-            ?,
-            COALESCE((SELECT analysis_count FROM users WHERE email = ?), 0),
-            TRUE
-          )
-        """, (email, email))
-        conn.commit()
-        conn.close()
-        print(f"[Verify] {email} verified successfully")
-        return jsonify({"success": True, "message": "Email verified successfully", "is_admin": False})
-    except Exception as exc:
-        print(f"Error verifying email: {exc}")
-        return jsonify({"success": False, "message": "Verification failed"}), 500
-
-@app.route("/api/analyze-quote", methods=["POST"])
-def analyze_quote():
-    try:
-        data = request.get_json() or {}
-        system_size = safe_float(data.get("system_size"))
-        total_price = safe_float(data.get("total_price"))
-        has_battery = bool(data.get("has_battery"))
-        battery_brand = (data.get("battery_brand") or "").strip()
-        battery_quantity = safe_int(data.get("battery_quantity"), 1)
-        battery_capacity = safe_float(data.get("battery_capacity"))
-        user_email = (data.get("user_email") or "").strip().lower()
-        if system_size <= 0 or total_price <= 0:
-            return jsonify({"success": False, "message": "Valid system size and total price are required"}), 400
-        is_admin = is_admin_email(user_email)
-        # Limit analyses: 3 free analyses per non‑admin user
-        if user_email and not is_admin:
-            count = get_user_analysis_count(user_email)
-            if count >= 3:
-                return jsonify({
-                    "success": False,
-                    "message": "Analysis limit reached. Please upgrade for unlimited analyses.",
-                    "upgrade_required": True
-                }), 403
-        # Solar grading
-        price_per_kw = total_price / system_size
-        if price_per_kw < 1000:
-            solar_grade, solar_verdict = "A+", "Excellent value"
-        elif price_per_kw < 1200:
-            solar_grade, solar_verdict = "A", "Very good value"
-        elif price_per_kw < 1500:
-            solar_grade, solar_verdict = "B", "Good value"
-        elif price_per_kw < 2000:
-            solar_grade, solar_verdict = "C", "Fair pricing"
-        elif price_per_kw < 2500:
-            solar_grade, solar_verdict = "D", "Expensive – consider getting more quotes"
+            return jsonify({'error': 'Email is required'}), 400
+        
+        analysis_data = data.get('analysis_data')
+        
+        # Generate magic link token
+        token = generate_magic_link_token(email, analysis_data)
+        
+        # Send email
+        if send_magic_link_email(email, token):
+            return jsonify({
+                'success': True,
+                'message': 'Magic link sent successfully. Check your email!'
+            })
         else:
-            solar_grade, solar_verdict = "F", "Very expensive – definitely get more quotes"
-        # Battery grading
-        battery_grade = "N/A"
-        battery_verdict = ""
-        total_capacity = None
-        battery_info_str = None
-        if has_battery and battery_brand and battery_brand != "Other":
-            battery_info = next((b for b in BATTERY_OPTIONS if b["brand"] == battery_brand), None)
-            if battery_info:
-                total_capacity = battery_info["capacity"] * battery_quantity
-                est_cost = sum(battery_info["price_range"]) / 2 * battery_quantity
-                est_solar_cost = system_size * 1000  # assumption
-                battery_portion = max(0, min(est_cost, total_price - est_solar_cost))
-                if total_capacity > 0 and battery_portion > 0:
-                    price_per_kwh = battery_portion / total_capacity
-                    if price_per_kwh < 400:
-                        battery_grade, battery_verdict = "A+", "Excellent battery value"
-                    elif price_per_kwh < 500:
-                        battery_grade, battery_verdict = "A", "Very good battery value"
-                    elif price_per_kwh < 600:
-                        battery_grade, battery_verdict = "B", "Good battery value"
-                    elif price_per_kwh < 700:
-                        battery_grade, battery_verdict = "C", "Fair battery pricing"
-                    else:
-                        battery_grade, battery_verdict = "D", "Expensive battery"
-                battery_info_str = battery_brand
-        # Combine grades
-        overall_grade = solar_grade
-        if has_battery and battery_grade != "N/A":
-            grade_to_val = {"A+": 5, "A": 4, "B": 3, "C": 2, "D": 1, "F": 0}
-            val_to_grade = {v: k for k, v in grade_to_val.items()}
-            combined_val = (grade_to_val.get(solar_grade, 0) + grade_to_val.get(battery_grade, 0)) // 2
-            overall_grade = val_to_grade.get(combined_val, "F")
-        verdict = solar_verdict if not (has_battery and battery_verdict) else f"{solar_verdict}. {battery_verdict}"
-        # Increment analysis count for non‑admins
-        if user_email and not is_admin:
-            increment_user_analysis_count(user_email)
-        remaining = "unlimited" if is_admin else max(0, 3 - get_user_analysis_count(user_email))
-        return jsonify({
-            "success": True,
-            "grade": overall_grade,
-            "verdict": verdict,
-            "price_per_kw": round(price_per_kw, 0),
-            "system_details": {
-                "system_size": system_size,
-                "total_price": total_price,
-                "has_battery": has_battery,
-                "battery_info": battery_info_str,
-                "total_capacity": total_capacity
+            return jsonify({'error': 'Failed to send magic link email'}), 500
+            
+    except Exception as e:
+        return jsonify({'error': f'Failed to send magic link: {str(e)}'}), 500
+
+@app.route('/api/verify-token', methods=['POST'])
+def verify_token():
+    """Verify the magic link token and send PDF"""
+    try:
+        data = request.get_json()
+        token = data.get('token')
+        
+        if not token:
+            return jsonify({'error': 'Token is required'}), 400
+        
+        # Verify token
+        payload, error = verify_magic_link_token(token)
+        
+        if error:
+            return jsonify({'error': error}), 400
+        
+        # Token is valid - send PDF
+        email = payload['email']
+        analysis_data = payload['analysis_data']
+        
+        if send_pdf_email(email, analysis_data):
+            return jsonify({
+                'success': True,
+                'message': 'Email verified successfully! Check your email for the PDF guide.',
+                'email': email,
+                'analysis_data': analysis_data
+            })
+        else:
+            return jsonify({'error': 'Failed to send PDF'}), 500
+            
+    except Exception as e:
+        return jsonify({'error': f'Verification failed: {str(e)}'}), 500
+
+@app.route('/api/analyze-quote', methods=['POST'])
+def analyze_quote():
+    """Analyze a solar quote and return A-F grade with detailed breakdown"""
+    try:
+        data = request.get_json()
+        
+        # Validate required fields
+        required_fields = ['system_size', 'total_price']
+        for field in required_fields:
+            if field not in data:
+                return jsonify({'error': f'Missing required field: {field}'}), 400
+        
+        system_size = float(data['system_size'])
+        total_price = float(data['total_price'])
+        has_battery = data.get('has_battery', False)
+        battery_brand = data.get('battery_brand', '')
+        battery_quantity = int(data.get('battery_quantity', 0))
+        battery_capacity = float(data.get('battery_capacity', 0))
+        
+        # Calculate price per kW
+        price_per_kw = total_price / system_size
+        
+        # Determine grade based on price per kW
+        grade = 'F'  # Default to worst grade
+        grade_info = None
+        
+        for grade_letter, tier in SOLAR_PRICING_TIERS.items():
+            if tier['min'] <= price_per_kw <= tier['max']:
+                grade = grade_letter
+                grade_info = tier
+                break
+        
+        if grade_info is None:
+            # Handle edge cases
+            if price_per_kw < SOLAR_PRICING_TIERS['A']['min']:
+                grade = 'A'
+                grade_info = SOLAR_PRICING_TIERS['A']
+            else:
+                grade = 'F'
+                grade_info = SOLAR_PRICING_TIERS['F']
+        
+        # Calculate potential savings
+        market_average = 2150  # £/kW market average
+        if price_per_kw > market_average:
+            potential_savings = (price_per_kw - market_average) * system_size
+        else:
+            potential_savings = 0
+        
+        # Build response
+        response = {
+            'grade': grade,
+            'verdict': grade_info['description'],
+            'analysis': {
+                'system_size': system_size,
+                'total_price': total_price,
+                'price_per_kw': round(price_per_kw, 2),
+                'market_average': market_average,
+                'potential_savings': round(potential_savings, 2),
+                'has_battery': has_battery
             },
-            "is_admin": is_admin,
-            "remaining_analyses": remaining
-        })
-    except Exception as exc:
-        print(f"Error analyzing quote: {exc}")
-        return jsonify({"success": False, "message": "Analysis failed"}), 500
+            'recommendations': []
+        }
+        
+        # Add recommendations based on grade
+        if grade in ['D', 'F']:
+            response['recommendations'].append('Consider negotiating the price')
+            response['recommendations'].append('Get additional quotes for comparison')
+        
+        if potential_savings > 1000:
+            response['recommendations'].append(f'You could save up to £{potential_savings:,.0f} with better pricing')
+        
+        return jsonify(response)
+        
+    except Exception as e:
+        return jsonify({'error': f'Analysis failed: {str(e)}'}), 500
 
-# Root and health endpoints (optional, but harmless)
-@app.route("/")
-def root():
-    return jsonify({"status": "ok", "version": "2.0"})
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=False)
 
-@app.route("/health")
-def health():
-    return jsonify({"status": "healthy", "timestamp": datetime.now().isoformat()})
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port, debug=False)
