@@ -289,7 +289,14 @@ def send_pdf_email(email, analysis_data):
                             <li>Negotiate better deals and protect your investment</li>
                         </ul>
                         <h3>🚀 Want More Detailed Analysis?</h3>
-                        <p>Upgrade to our Premium Analysis (£9.99) for:</p>
+                        <p style="margin-bottom: 10px;">
+                            <span style="text-decoration: line-through; color: #888;">£49.99</span>
+                            <strong style="font-size: 24px; color: #14b8a6; margin-left: 10px;">£24.99</strong>
+                        </p>
+                        <p style="background: #fef3c7; border-left: 4px solid #f59e0b; padding: 10px; margin: 15px 0; border-radius: 4px;">
+                            <strong>🔥 LAUNCH SPECIAL - SAVE £25</strong>
+                        </p>
+                        <p>Upgrade to our Premium Analysis for:</p>
                         <ul>
                             <li>15+ page detailed PDF report</li>
                             <li>Component-by-component breakdown</li>
@@ -298,7 +305,10 @@ def send_pdf_email(email, analysis_data):
                             <li>Direct access to solar experts</li>
                         </ul>
                         <p style="text-align: center; margin-top: 30px;">
-                            <a href="{FRONTEND_URL}/upgrade" style="background: #14b8a6; color: white; padding: 15px 30px; text-decoration: none; border-radius: 5px; display: inline-block;">Upgrade to Premium</a>
+                            <a href="{FRONTEND_URL}/upgrade" style="background: #14b8a6; color: white; padding: 15px 30px; text-decoration: none; border-radius: 5px; display: inline-block; font-weight: bold;">Upgrade to Premium - £24.99</a>
+                        </p>
+                        <p style="text-align: center; color: #666; font-size: 12px; margin-top: 10px;">
+                            One-off payment • Instant unlock • 30-day money-back guarantee
                         </p>
                     </div>
                     <div class="footer">
