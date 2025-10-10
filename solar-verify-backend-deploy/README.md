@@ -1,54 +1,36 @@
-# Solar Verify Backend
+# Solar Verify Backend - Magic Link Authentication
 
-Professional solar quote analysis API with real component database.
+Professional solar quote analysis API with magic link email verification and PDF delivery.
 
 ## Features
 
-- **Quote Analysis API** - Grade solar quotes A-F based on real market data
-- **Component Database** - Real solar panels, batteries, and inverters
-- **Email Tracking** - User management and usage limits
-- **Pricing Benchmarks** - Current UK market rates
+- **Quote Analysis API** - Grade solar quotes A-F based on real UK market data
+- **Magic Link Authentication** - Secure, one-click email verification (no OTP typing)
+- **JWT-based Security** - 10-minute expiration, single-use tokens
+- **PDF Delivery** - Automatic Solar Buyer's Guide delivery after verification
+- **SendGrid Integration** - Professional email delivery
 
 ## API Endpoints
 
-### Quote Analysis
-- `POST /api/analyze-quote` - Analyze a solar quote
-- `GET /api/components/panels` - Search solar panels
-- `GET /api/components/batteries` - Search batteries
-- `GET /api/pricing-benchmarks` - Get pricing benchmarks
+### POST /api/analyze-quote
+Analyze a solar quote and return A-F grade
 
-### User Management
-- `POST /api/register-email` - Register user email
-- `POST /api/track-usage` - Track usage limits
-- `POST /api/check-email-status` - Check user status
+### POST /api/send-magic-link
+Send magic link verification email
 
-## Database
+### POST /api/verify-token
+Verify JWT token and send PDF
 
-Contains real data for:
-- 8 Solar panel models (including 515W Longi)
-- 8 Battery models (including Fox ESS EP11)
-- 6 Inverter models
-- UK pricing benchmarks
-
-## Deployment
-
-Configured for Railway deployment with PostgreSQL database.
+### GET /api/health
+Health check endpoint
 
 ## Environment Variables
 
-- `DATABASE_URL` - PostgreSQL connection string (auto-provided by Railway)
-- `SECRET_KEY` - Flask secret key (optional)
-- `PORT` - Server port (auto-provided by Railway)
+- `SENDGRID_API_KEY` - SendGrid API key
+- `JWT_SECRET` - JWT signing secret
+- `FRONTEND_URL` - Frontend URL (e.g., https://solarverify.co.uk )
+- `PORT` - Server port (default: 5000)
 
-## Local Development
+## Deployment
 
-```bash
-# Install dependencies
-pip install -r requirements.txt
-
-# Run server
-python src/main.py
-```
-
-Server runs on http://localhost:5000
-
+Configured for Railway deployment with SendGrid email integration.
