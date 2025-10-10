@@ -1,4 +1,3 @@
-
 import os
 import random
 import string
@@ -17,8 +16,10 @@ CORS(app)  # Enable CORS for all routes
 JWT_SECRET = os.environ.get('JWT_SECRET', 'your-secret-key-change-in-production')
 FRONTEND_URL = os.environ.get('FRONTEND_URL', 'https://solarverify.co.uk')
 
-# In-memory storage for used tokens (use Redis or database in production)
+# In-memory storage for used tokens and analysis data (use Redis or database in production)
 used_tokens = set()
+# Store analysis data by token for persistence
+analysis_storage = {}  # token -> {analysis_data, email, timestamp}
 
 # UK Solar Market Data (September 2025)
 SOLAR_PRICING_TIERS = {
@@ -55,18 +56,42 @@ def generate_magic_link_token(email, analysis_data):
     token = jwt.encode(payload, JWT_SECRET, algorithm='HS256')
     return token
 
-def verify_magic_link_token(token):
+def cleanup_expired_data():
+    """Remove expired tokens and analysis data to prevent memory leaks"""
+    current_time = datetime.utcnow()
+    expired_tokens = []
+    
+    for token, data in list(analysis_storage.items()):
+        try:
+            # Try to decode token to check expiration
+            jwt.decode(token, JWT_SECRET, algorithms=['HS256'])
+        except jwt.ExpiredSignatureError:
+            # Token has expired, mark for removal
+            expired_tokens.append(token)
+        except jwt.InvalidTokenError:
+            # Invalid token, mark for removal
+            expired_tokens.append(token)
+    
+    # Remove expired tokens from storage
+    for token in expired_tokens:
+        analysis_storage.pop(token, None)
+        used_tokens.discard(token)
+    
+    return len(expired_tokens)
+
+def verify_magic_link_token(token, mark_as_used=True):
     """Verify and decode JWT token"""
     try:
-        # Check if token has already been used
-        if token in used_tokens:
+        # Check if token has already been used for PDF delivery
+        if mark_as_used and token in used_tokens:
             return None, 'Token has already been used'
         
         # Decode and verify token
         payload = jwt.decode(token, JWT_SECRET, algorithms=['HS256'])
         
-        # Mark token as used
-        used_tokens.add(token)
+        # Mark token as used only if requested (for PDF delivery)
+        if mark_as_used:
+            used_tokens.add(token)
         
         return payload, None
     except jwt.ExpiredSignatureError:
@@ -375,6 +400,13 @@ def send_magic_link():
         # Generate magic link token
         token = generate_magic_link_token(email, analysis_data)
         
+        # Store analysis data for persistence
+        analysis_storage[token] = {
+            'email': email,
+            'analysis_data': analysis_data,
+            'timestamp': datetime.utcnow().isoformat()
+        }
+        
         # Send email
         if send_magic_link_email(email, token):
             return jsonify({
@@ -391,31 +423,45 @@ def send_magic_link():
 def verify_token():
     """Verify the magic link token and send PDF"""
     try:
+        # Cleanup expired data periodically
+        cleanup_expired_data()
+        
         data = request.get_json()
         token = data.get('token')
         
         if not token:
             return jsonify({'error': 'Token is required'}), 400
         
-        # Verify token
-        payload, error = verify_magic_link_token(token)
+        # First verify token without marking as used (to allow retrieval)
+        payload, error = verify_magic_link_token(token, mark_as_used=False)
         
         if error:
             return jsonify({'error': error}), 400
         
-        # Token is valid - send PDF
-        email = payload['email']
-        analysis_data = payload['analysis_data']
+        # Get stored analysis data
+        stored_data = analysis_storage.get(token)
+        if not stored_data:
+            return jsonify({'error': 'Analysis data not found'}), 404
         
-        if send_pdf_email(email, analysis_data):
-            return jsonify({
-                'success': True,
-                'message': 'Email verified successfully! Check your email for the PDF guide.',
-                'email': email,
-                'analysis_data': analysis_data
-            })
-        else:
-            return jsonify({'error': 'Failed to send PDF'}), 500
+        email = stored_data['email']
+        analysis_data = stored_data['analysis_data']
+        
+        # Check if PDF has already been sent for this token
+        if token not in used_tokens:
+            # First time verification - send PDF
+            if send_pdf_email(email, analysis_data):
+                # Mark token as used for PDF delivery
+                used_tokens.add(token)
+            else:
+                return jsonify({'error': 'Failed to send PDF'}), 500
+        
+        # Return success with analysis data (whether PDF was just sent or already sent)
+        return jsonify({
+            'success': True,
+            'message': 'Email verified successfully! Check your email for the PDF guide.',
+            'email': email,
+            'analysis_data': analysis_data
+        })
             
     except Exception as e:
         return jsonify({'error': f'Verification failed: {str(e)}'}), 500
@@ -515,3 +561,4 @@ def analyze_quote():
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
+
