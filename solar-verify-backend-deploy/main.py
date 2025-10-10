@@ -1,3 +1,4 @@
+
 import os
 import random
 import string
@@ -187,6 +188,32 @@ def send_pdf_email(email, analysis_data):
         # Encode PDF to base64
         encoded_pdf = base64.b64encode(pdf_data).decode()
         
+        # Handle both nested and flat data structures
+        if 'analysis' in analysis_data:
+            # Nested structure
+            system_size = analysis_data['analysis'].get('system_size', 'N/A')
+            total_price = analysis_data['analysis'].get('total_price', 0)
+            price_per_kw = analysis_data['analysis'].get('price_per_kw', 0)
+        else:
+            # Flat structure - extract from string values
+            system_size = analysis_data.get('system_size', 'N/A')
+            total_price_str = analysis_data.get('total_cost', '£0')
+            price_per_kw_str = analysis_data.get('price_per_watt', '£0')
+            
+            # Convert strings to numbers for formatting
+            try:
+                total_price = float(total_price_str.replace('£', '').replace(',', ''))
+            except:
+                total_price = 0
+            
+            try:
+                price_per_kw = float(price_per_kw_str.replace('£', '').replace(',', ''))
+            except:
+                price_per_kw = 0
+        
+        grade = analysis_data.get('grade', 'N/A')
+        verdict = analysis_data.get('verdict', 'Analysis complete')
+        
         message = Mail(
             from_email='justinburgher@solarverify.co.uk',
             to_emails=email,
@@ -246,12 +273,12 @@ def send_pdf_email(email, analysis_data):
                     </div>
                     <div class="content">
                         <h2>Your Quote Grade</h2>
-                        <div class="grade">Grade {analysis_data['grade']}</div>
+                        <div class="grade">Grade {grade}</div>
                         <div class="analysis-box">
-                            <p><strong>System Size:</strong> {analysis_data['analysis']['system_size']}kW</p>
-                            <p><strong>Total Price:</strong> £{analysis_data['analysis']['total_price']:,.0f}</p>
-                            <p><strong>Price per kW:</strong> £{analysis_data['analysis']['price_per_kw']:.2f}</p>
-                            <p><strong>Verdict:</strong> {analysis_data['verdict']}</p>
+                            <p><strong>System Size:</strong> {system_size}</p>
+                            <p><strong>Total Price:</strong> £{total_price:,.0f}</p>
+                            <p><strong>Price per kW:</strong> £{price_per_kw:.2f}</p>
+                            <p><strong>Verdict:</strong> {verdict}</p>
                         </div>
                         <h3>📄 Your Free Solar Buyer's Guide</h3>
                         <p>We've attached "The Complete Solar Quote Buyer's Guide" to this email. This comprehensive guide will help you:</p>
@@ -462,4 +489,3 @@ def analyze_quote():
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
-
