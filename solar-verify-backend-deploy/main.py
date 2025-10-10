@@ -20,6 +20,8 @@ FRONTEND_URL = os.environ.get('FRONTEND_URL', 'https://solarverify.co.uk')
 used_tokens = set()
 # Store analysis data by token for persistence
 analysis_storage = {}  # token -> {analysis_data, email, timestamp}
+# Store verified emails with timestamp (email -> timestamp)
+verified_emails = {}  # Tracks emails that have been verified
 
 # UK Solar Market Data (September 2025)
 SOLAR_PRICING_TIERS = {
@@ -397,7 +399,25 @@ def send_magic_link():
         
         analysis_data = data.get('analysis_data')
         
-        # Generate magic link token
+        # Check if email has been verified before (within last 24 hours)
+        if email in verified_emails:
+            last_verified = datetime.fromisoformat(verified_emails[email])
+            time_since_verification = datetime.utcnow() - last_verified
+            
+            # If verified within last 24 hours, skip email verification
+            if time_since_verification.total_seconds() < 86400:  # 24 hours
+                # Send PDF directly without verification
+                if send_pdf_email(email, analysis_data):
+                    return jsonify({
+                        'success': True,
+                        'already_verified': True,
+                        'message': 'Email already verified! Check your inbox for the PDF guide.',
+                        'analysis_data': analysis_data
+                    })
+                else:
+                    return jsonify({'error': 'Failed to send PDF'}), 500
+        
+        # Generate magic link token for new or expired verifications
         token = generate_magic_link_token(email, analysis_data)
         
         # Store analysis data for persistence
@@ -452,6 +472,8 @@ def verify_token():
             if send_pdf_email(email, analysis_data):
                 # Mark token as used for PDF delivery
                 used_tokens.add(token)
+                # Track this email as verified
+                verified_emails[email] = datetime.utcnow().isoformat()
             else:
                 return jsonify({'error': 'Failed to send PDF'}), 500
         
