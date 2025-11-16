@@ -42,6 +42,52 @@ BATTERY_BRANDS = {
     'Other': {'capacity': 10.0, 'efficiency': 0.9}  # Default for custom
 }
 
+def calculate_analysis(system_size, total_price, has_battery=False, battery_brand='', battery_quantity=0, battery_capacity=0):
+    """Calculate grade and analysis details from quote data"""
+    # Calculate price per kW
+    price_per_kw = total_price / system_size
+    
+    # Determine grade based on price per kW
+    grade = 'F'  # Default to worst grade
+    grade_info = None
+    
+    for grade_letter, tier in SOLAR_PRICING_TIERS.items():
+        if tier['min'] <= price_per_kw <= tier['max']:
+            grade = grade_letter
+            grade_info = tier
+            break
+    
+    if grade_info is None:
+        # Handle edge cases
+        if price_per_kw < SOLAR_PRICING_TIERS['A']['min']:
+            grade = 'A'
+            grade_info = SOLAR_PRICING_TIERS['A']
+        else:
+            grade = 'F'
+            grade_info = SOLAR_PRICING_TIERS['F']
+    
+    # Calculate potential savings
+    market_average = 2150  # £/kW market average
+    if price_per_kw > market_average:
+        potential_savings = (price_per_kw - market_average) * system_size
+    else:
+        potential_savings = 0
+    
+    # Build complete analysis
+    return {
+        'grade': grade,
+        'verdict': grade_info['description'],
+        'system_size': system_size,
+        'total_price': total_price,
+        'price_per_kw': round(price_per_kw, 2),
+        'market_average': market_average,
+        'potential_savings': round(potential_savings, 2),
+        'has_battery': has_battery,
+        'battery_brand': battery_brand,
+        'battery_quantity': battery_quantity,
+        'battery_capacity': battery_capacity
+    }
+
 def generate_magic_link_token(email, analysis_data):
     """Generate a JWT token for magic link authentication"""
     # Generate unique token ID to prevent replay attacks
@@ -215,29 +261,10 @@ def send_pdf_email(email, analysis_data):
         # Encode PDF to base64
         encoded_pdf = base64.b64encode(pdf_data).decode()
         
-        # Handle both nested and flat data structures
-        if 'analysis' in analysis_data:
-            # Nested structure
-            system_size = analysis_data['analysis'].get('system_size', 'N/A')
-            total_price = analysis_data['analysis'].get('total_price', 0)
-            price_per_kw = analysis_data['analysis'].get('price_per_kw', 0)
-        else:
-            # Flat structure - extract from string values
-            system_size = analysis_data.get('system_size', 'N/A')
-            total_price_str = analysis_data.get('total_cost', '£0')
-            price_per_kw_str = analysis_data.get('price_per_watt', '£0')
-            
-            # Convert strings to numbers for formatting
-            try:
-                total_price = float(total_price_str.replace('£', '').replace(',', ''))
-            except:
-                total_price = 0
-            
-            try:
-                price_per_kw = float(price_per_kw_str.replace('£', '').replace(',', ''))
-            except:
-                price_per_kw = 0
-        
+        # Extract analysis data (now in flat structure with grade and verdict)
+        system_size = analysis_data.get('system_size', 0)
+        total_price = analysis_data.get('total_price', 0)
+        price_per_kw = analysis_data.get('price_per_kw', 0)
         grade = analysis_data.get('grade', 'N/A')
         verdict = analysis_data.get('verdict', 'Analysis complete')
         
@@ -266,23 +293,42 @@ def send_pdf_email(email, analysis_data):
                         text-align: center;
                         border-radius: 8px 8px 0 0;
                     }}
+                    .grade-badge {{
+                        display: inline-block;
+                        font-size: 48px;
+                        font-weight: bold;
+                        background: white;
+                        color: #14b8a6;
+                        width: 80px;
+                        height: 80px;
+                        line-height: 80px;
+                        border-radius: 50%;
+                        margin: 20px 0;
+                    }}
                     .content {{
                         background: #f9f9f9;
                         padding: 30px;
-                        border-radius: 0 0 8px 8px;
-                    }}
-                    .grade {{
-                        font-size: 48px;
-                        font-weight: bold;
-                        text-align: center;
-                        color: #14b8a6;
-                        margin: 20px 0;
                     }}
                     .analysis-box {{
                         background: white;
-                        padding: 20px;
                         border-radius: 8px;
+                        padding: 20px;
                         margin: 20px 0;
+                        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                    }}
+                    .metric {{
+                        display: inline-block;
+                        width: 48%;
+                        margin: 10px 0;
+                    }}
+                    .metric-label {{
+                        color: #666;
+                        font-size: 14px;
+                    }}
+                    .metric-value {{
+                        color: #333;
+                        font-size: 24px;
+                        font-weight: bold;
                     }}
                     .footer {{
                         text-align: center;
@@ -296,47 +342,40 @@ def send_pdf_email(email, analysis_data):
                 <div class="container">
                     <div class="header">
                         <h1>Solar✓erify</h1>
-                        <p>Your Solar Quote Analysis Results</p>
+                        <div class="grade-badge">{grade}</div>
+                        <h2>{verdict}</h2>
                     </div>
                     <div class="content">
-                        <h2>Your Quote Grade</h2>
-                        <div class="grade">Grade {grade}</div>
+                        <h2>Your Quote Analysis Results</h2>
+                        
                         <div class="analysis-box">
-                            <p><strong>System Size:</strong> {system_size}</p>
-                            <p><strong>Total Price:</strong> £{total_price:,.0f}</p>
-                            <p><strong>Price per kW:</strong> £{price_per_kw:.2f}</p>
-                            <p><strong>Verdict:</strong> {verdict}</p>
+                            <div class="metric">
+                                <div class="metric-label">System Size</div>
+                                <div class="metric-value">{system_size} kW</div>
+                            </div>
+                            <div class="metric">
+                                <div class="metric-label">Total Price</div>
+                                <div class="metric-value">£{total_price:,.0f}</div>
+                            </div>
+                            <div class="metric">
+                                <div class="metric-label">Price per kW</div>
+                                <div class="metric-value">£{price_per_kw:,.2f}</div>
+                            </div>
                         </div>
+                        
                         <h3>📄 Your Free Solar Buyer's Guide</h3>
-                        <p>We've attached "The Complete Solar Quote Buyer's Guide" to this email. This comprehensive guide will help you:</p>
+                        <p>We've attached our comprehensive Solar Buyer's Guide PDF with 7 critical red flags to watch for when reviewing solar quotes.</p>
+                        
+                        <p><strong>What's inside:</strong></p>
                         <ul>
-                            <li>Identify fair pricing and avoid overpriced quotes</li>
-                            <li>Recognize quality equipment vs poor components</li>
-                            <li>Spot installer red flags and warning signs</li>
-                            <li>Negotiate better deals and protect your investment</li>
+                            <li>7 Red Flags in Solar Quotes</li>
+                            <li>How to spot overpricing</li>
+                            <li>Questions to ask installers</li>
+                            <li>Industry pricing benchmarks</li>
+                            <li>Warranty and guarantee checklist</li>
                         </ul>
-                        <h3>🚀 Want More Detailed Analysis?</h3>
-                        <p style="margin-bottom: 10px;">
-                            <span style="text-decoration: line-through; color: #888;">£49.99</span>
-                            <strong style="font-size: 24px; color: #14b8a6; margin-left: 10px;">£24.99</strong>
-                        </p>
-                        <p style="background: #fef3c7; border-left: 4px solid #f59e0b; padding: 10px; margin: 15px 0; border-radius: 4px;">
-                            <strong>🔥 LAUNCH SPECIAL - SAVE £25</strong>
-                        </p>
-                        <p>Upgrade to our Premium Analysis for:</p>
-                        <ul>
-                            <li>15+ page detailed PDF report</li>
-                            <li>Component-by-component breakdown</li>
-                            <li>Installer reputation check</li>
-                            <li>Personalized negotiation strategies</li>
-                            <li>Direct access to solar experts</li>
-                        </ul>
-                        <p style="text-align: center; margin-top: 30px;">
-                            <a href="{FRONTEND_URL}/upgrade" style="background: #14b8a6; color: white; padding: 15px 30px; text-decoration: none; border-radius: 5px; display: inline-block; font-weight: bold;">Upgrade to Premium - £24.99</a>
-                        </p>
-                        <p style="text-align: center; color: #666; font-size: 12px; margin-top: 10px;">
-                            One-off payment • Instant unlock • 30-day money-back guarantee
-                        </p>
+                        
+                        <p style="margin-top: 30px;">Need help? Reply to this email or visit our website for more information.</p>
                     </div>
                     <div class="footer">
                         <p>© 2024 Solar✓erify Ltd. All rights reserved.</p>
@@ -369,7 +408,7 @@ def home():
     return jsonify({
         'service': 'Solar Verify Analysis API',
         'status': 'operational',
-        'version': '2.0.0 - Magic Link',
+        'version': '2.1.0 - Fixed Analysis Storage',
         'endpoints': {
             'health': '/api/health',
             'analyze': '/api/analyze-quote',
@@ -397,7 +436,30 @@ def send_magic_link():
         if not email:
             return jsonify({'error': 'Email is required'}), 400
         
-        analysis_data = data.get('analysis_data')
+        # Get raw analysis data from frontend
+        raw_analysis_data = data.get('analysis_data', {})
+        
+        # Extract values
+        system_size = float(raw_analysis_data.get('system_size', 0))
+        total_price = float(raw_analysis_data.get('total_price', 0))
+        has_battery = raw_analysis_data.get('has_battery', False)
+        battery_brand = raw_analysis_data.get('battery_brand', '')
+        battery_quantity = int(raw_analysis_data.get('battery_quantity', 0))
+        battery_capacity = float(raw_analysis_data.get('battery_capacity', 0))
+        
+        # Validate
+        if system_size <= 0 or total_price <= 0:
+            return jsonify({'error': 'Invalid system size or price'}), 400
+        
+        # Calculate complete analysis with grade and verdict
+        complete_analysis = calculate_analysis(
+            system_size=system_size,
+            total_price=total_price,
+            has_battery=has_battery,
+            battery_brand=battery_brand,
+            battery_quantity=battery_quantity,
+            battery_capacity=battery_capacity
+        )
         
         # Check if email has been verified before (within last 24 hours)
         if email in verified_emails:
@@ -407,23 +469,23 @@ def send_magic_link():
             # If verified within last 24 hours, skip email verification
             if time_since_verification.total_seconds() < 86400:  # 24 hours
                 # Send PDF directly without verification
-                if send_pdf_email(email, analysis_data):
+                if send_pdf_email(email, complete_analysis):
                     return jsonify({
                         'success': True,
                         'already_verified': True,
                         'message': 'Email already verified! Check your inbox for the PDF guide.',
-                        'analysis_data': analysis_data
+                        'analysis_data': complete_analysis
                     })
                 else:
                     return jsonify({'error': 'Failed to send PDF'}), 500
         
-        # Generate magic link token for new or expired verifications
-        token = generate_magic_link_token(email, analysis_data)
+        # Generate magic link token with COMPLETE analysis (including grade and verdict)
+        token = generate_magic_link_token(email, complete_analysis)
         
-        # Store analysis data for persistence
+        # Store complete analysis data for persistence
         analysis_storage[token] = {
             'email': email,
-            'analysis_data': analysis_data,
+            'analysis_data': complete_analysis,
             'timestamp': datetime.utcnow().isoformat()
         }
         
@@ -477,7 +539,7 @@ def verify_token():
             else:
                 return jsonify({'error': 'Failed to send PDF'}), 500
         
-        # Return success with analysis data (whether PDF was just sent or already sent)
+        # Return success with COMPLETE analysis data (including grade and verdict)
         return jsonify({
             'success': True,
             'message': 'Email verified successfully! Check your email for the PDF guide.',
@@ -523,57 +585,39 @@ def analyze_quote():
             battery_quantity = 0
             battery_capacity = 0
         
-        # Calculate price per kW (now safe from division by zero)
-        price_per_kw = total_price / system_size
-        
-        # Determine grade based on price per kW
-        grade = 'F'  # Default to worst grade
-        grade_info = None
-        
-        for grade_letter, tier in SOLAR_PRICING_TIERS.items():
-            if tier['min'] <= price_per_kw <= tier['max']:
-                grade = grade_letter
-                grade_info = tier
-                break
-        
-        if grade_info is None:
-            # Handle edge cases
-            if price_per_kw < SOLAR_PRICING_TIERS['A']['min']:
-                grade = 'A'
-                grade_info = SOLAR_PRICING_TIERS['A']
-            else:
-                grade = 'F'
-                grade_info = SOLAR_PRICING_TIERS['F']
-        
-        # Calculate potential savings
-        market_average = 2150  # £/kW market average
-        if price_per_kw > market_average:
-            potential_savings = (price_per_kw - market_average) * system_size
-        else:
-            potential_savings = 0
-        
-        # Build response
-        response = {
-            'grade': grade,
-            'verdict': grade_info['description'],
-            'analysis': {
-                'system_size': system_size,
-                'total_price': total_price,
-                'price_per_kw': round(price_per_kw, 2),
-                'market_average': market_average,
-                'potential_savings': round(potential_savings, 2),
-                'has_battery': has_battery
-            },
-            'recommendations': []
-        }
+        # Use the centralized calculation function
+        complete_analysis = calculate_analysis(
+            system_size=system_size,
+            total_price=total_price,
+            has_battery=has_battery,
+            battery_brand=battery_brand,
+            battery_quantity=battery_quantity,
+            battery_capacity=battery_capacity
+        )
         
         # Add recommendations based on grade
-        if grade in ['D', 'F']:
-            response['recommendations'].append('Consider negotiating the price')
-            response['recommendations'].append('Get additional quotes for comparison')
+        recommendations = []
+        if complete_analysis['grade'] in ['D', 'F']:
+            recommendations.append('Consider negotiating the price')
+            recommendations.append('Get additional quotes for comparison')
         
-        if potential_savings > 1000:
-            response['recommendations'].append(f'You could save up to £{potential_savings:,.0f} with better pricing')
+        if complete_analysis['potential_savings'] > 1000:
+            recommendations.append(f'You could save up to £{complete_analysis["potential_savings"]:,.0f} with better pricing')
+        
+        # Build response with nested structure for backwards compatibility
+        response = {
+            'grade': complete_analysis['grade'],
+            'verdict': complete_analysis['verdict'],
+            'analysis': {
+                'system_size': complete_analysis['system_size'],
+                'total_price': complete_analysis['total_price'],
+                'price_per_kw': complete_analysis['price_per_kw'],
+                'market_average': complete_analysis['market_average'],
+                'potential_savings': complete_analysis['potential_savings'],
+                'has_battery': complete_analysis['has_battery']
+            },
+            'recommendations': recommendations
+        }
         
         return jsonify(response)
         
@@ -583,4 +627,3 @@ def analyze_quote():
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
-
