@@ -396,6 +396,49 @@ def send_magic_link():
         
         analysis_data = data.get('analysis_data')
         
+        # Calculate grade from raw data if not already present
+        if analysis_data and 'grade' not in analysis_data:
+            try:
+                system_size = float(analysis_data.get('system_size', 0))
+                total_price = float(analysis_data.get('total_price', 0))
+                
+                if system_size > 0 and total_price > 0:
+                    # Calculate price per kW
+                    price_per_kw = total_price / system_size
+                    
+                    # Determine grade
+                    grade = 'F'
+                    grade_info = None
+                    
+                    for grade_letter, tier in SOLAR_PRICING_TIERS.items():
+                        if tier['min'] <= price_per_kw <= tier['max']:
+                            grade = grade_letter
+                            grade_info = tier
+                            break
+                    
+                    if grade_info is None:
+                        if price_per_kw < SOLAR_PRICING_TIERS['A']['min']:
+                            grade = 'A'
+                            grade_info = SOLAR_PRICING_TIERS['A']
+                        else:
+                            grade = 'F'
+                            grade_info = SOLAR_PRICING_TIERS['F']
+                    
+                    # Add calculated values to analysis_data
+                    analysis_data['grade'] = grade
+                    analysis_data['verdict'] = grade_info['description']
+                    analysis_data['price_per_kw'] = round(price_per_kw, 2)
+                    analysis_data['market_average'] = 2150
+                    
+                    # Calculate potential savings
+                    if price_per_kw > 2150:
+                        analysis_data['potential_savings'] = round((price_per_kw - 2150) * system_size, 2)
+                    else:
+                        analysis_data['potential_savings'] = 0
+            except (ValueError, TypeError, ZeroDivisionError) as e:
+                print(f"Error calculating grade: {str(e)}")
+                # Continue without grade if calculation fails
+        
         # Check if email has been verified before (within last 24 hours)
         if email in verified_emails:
             last_verified = datetime.fromisoformat(verified_emails[email])
