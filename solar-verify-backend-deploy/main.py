@@ -8,6 +8,7 @@ from flask_cors import CORS
 from sendgrid import SendGridAPIClient
 from sendgrid.helpers.mail import Mail, Attachment, FileContent, FileName, FileType, Disposition
 import base64
+import stripe
 from premium_pdf_generator import send_premium_report_email
 
 app = Flask(__name__)
@@ -16,6 +17,11 @@ CORS(app)  # Enable CORS for all routes
 # Configuration
 JWT_SECRET = os.environ.get('JWT_SECRET', 'your-secret-key-change-in-production')
 FRONTEND_URL = os.environ.get('FRONTEND_URL', 'https://solarverify.co.uk')
+STRIPE_SECRET_KEY = os.environ.get('STRIPE_SECRET_KEY')
+STRIPE_PUBLISHABLE_KEY = os.environ.get('STRIPE_PUBLISHABLE_KEY')
+
+# Initialize Stripe
+stripe.api_key = STRIPE_SECRET_KEY
 
 # In-memory storage for used tokens and analysis data (use Redis or database in production)
 used_tokens = set()
@@ -23,6 +29,8 @@ used_tokens = set()
 analysis_storage = {}  # token -> {analysis_data, email, timestamp}
 # Store verified emails with timestamp (email -> timestamp)
 verified_emails = {}  # Tracks emails that have been verified
+# Store premium payments (email -> {session_id, payment_status, timestamp})
+premium_payments = {}  # Tracks premium purchases
 
 # UK Solar Market Data (September 2025)
 SOLAR_PRICING_TIERS = {
@@ -869,6 +877,109 @@ def analyze_premium_quote():
         
     except Exception as e:
         return jsonify({'error': f'Premium analysis failed: {str(e)}'}), 500
+
+@app.route('/create-checkout-session', methods=['POST'])
+def create_checkout_session():
+    """Create a Stripe checkout session for premium upgrade"""
+    try:
+        data = request.json
+        email = data.get('email')
+        
+        if not email:
+            return jsonify({'error': 'Email is required'}), 400
+        
+        # Create Stripe checkout session
+        checkout_session = stripe.checkout.Session.create(
+            payment_method_types=['card'],
+            line_items=[{
+                'price_data': {
+                    'currency': 'gbp',
+                    'unit_amount': 2499,  # £24.99 in pence
+                    'product_data': {
+                        'name': 'Premium Solar Quote Analysis',
+                        'description': 'Detailed analysis with panel brand assessment, inverter quality check, battery evaluation, and personalized recommendations',
+                        'images': ['https://solarverify.co.uk/logo.png'],
+                    },
+                },
+                'quantity': 1,
+            }],
+            mode='payment',
+            success_url=f'{FRONTEND_URL}/premium-success?session_id={{CHECKOUT_SESSION_ID}}',
+            cancel_url=f'{FRONTEND_URL}/analyzer?upgrade=cancelled',
+            customer_email=email,
+            metadata={
+                'email': email,
+                'product': 'premium_analysis'
+            }
+        )
+        
+        return jsonify({
+            'sessionId': checkout_session.id,
+            'url': checkout_session.url
+        })
+        
+    except Exception as e:
+        return jsonify({'error': f'Failed to create checkout session: {str(e)}'}), 500
+
+@app.route('/verify-payment', methods=['POST'])
+def verify_payment():
+    """Verify Stripe payment and grant premium access"""
+    try:
+        data = request.json
+        session_id = data.get('session_id')
+        
+        if not session_id:
+            return jsonify({'error': 'Session ID is required'}), 400
+        
+        # Retrieve the session from Stripe
+        session = stripe.checkout.Session.retrieve(session_id)
+        
+        if session.payment_status == 'paid':
+            email = session.customer_email or session.metadata.get('email')
+            
+            # Store premium access
+            premium_payments[email] = {
+                'session_id': session_id,
+                'payment_status': 'paid',
+                'timestamp': datetime.now().isoformat(),
+                'amount': session.amount_total,
+                'currency': session.currency
+            }
+            
+            return jsonify({
+                'success': True,
+                'email': email,
+                'premium_access': True,
+                'message': 'Payment verified successfully'
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'message': 'Payment not completed'
+            }), 400
+            
+    except Exception as e:
+        return jsonify({'error': f'Failed to verify payment: {str(e)}'}), 500
+
+@app.route('/check-premium-access', methods=['POST'])
+def check_premium_access():
+    """Check if user has premium access"""
+    try:
+        data = request.json
+        email = data.get('email')
+        
+        if not email:
+            return jsonify({'error': 'Email is required'}), 400
+        
+        has_premium = email in premium_payments and premium_payments[email]['payment_status'] == 'paid'
+        
+        return jsonify({
+            'has_premium_access': has_premium,
+            'email': email
+        })
+        
+    except Exception as e:
+        return jsonify({'error': f'Failed to check premium access: {str(e)}'}), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
