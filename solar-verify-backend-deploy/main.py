@@ -8,7 +8,7 @@ from flask_cors import CORS
 from sendgrid import SendGridAPIClient
 from sendgrid.helpers.mail import Mail, Attachment, FileContent, FileName, FileType, Disposition
 import base64
-import stripe
+from premium_pdf_generator import send_premium_report_email
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
@@ -16,11 +16,6 @@ CORS(app)  # Enable CORS for all routes
 # Configuration
 JWT_SECRET = os.environ.get('JWT_SECRET', 'your-secret-key-change-in-production')
 FRONTEND_URL = os.environ.get('FRONTEND_URL', 'https://solarverify.co.uk')
-STRIPE_SECRET_KEY = os.environ.get('STRIPE_SECRET_KEY', '')
-STRIPE_PUBLISHABLE_KEY = os.environ.get('STRIPE_PUBLISHABLE_KEY', '')
-
-# Initialize Stripe
-stripe.api_key = STRIPE_SECRET_KEY
 
 # In-memory storage for used tokens and analysis data (use Redis or database in production)
 used_tokens = set()
@@ -28,8 +23,6 @@ used_tokens = set()
 analysis_storage = {}  # token -> {analysis_data, email, timestamp}
 # Store verified emails with timestamp (email -> timestamp)
 verified_emails = {}  # Tracks emails that have been verified
-# Store premium payments (email -> {session_id, payment_status, timestamp})
-premium_payments = {}  # Tracks premium purchases
 
 # UK Solar Market Data (September 2025)
 SOLAR_PRICING_TIERS = {
@@ -49,52 +42,6 @@ BATTERY_BRANDS = {
     'GivEnergy': {'capacity': 9.5, 'efficiency': 0.93},
     'Other': {'capacity': 10.0, 'efficiency': 0.9}  # Default for custom
 }
-
-def calculate_analysis(system_size, total_price, has_battery=False, battery_brand='', battery_quantity=0, battery_capacity=0):
-    """Calculate grade and analysis details from quote data"""
-    # Calculate price per kW
-    price_per_kw = total_price / system_size
-    
-    # Determine grade based on price per kW
-    grade = 'F'  # Default to worst grade
-    grade_info = None
-    
-    for grade_letter, tier in SOLAR_PRICING_TIERS.items():
-        if tier['min'] <= price_per_kw <= tier['max']:
-            grade = grade_letter
-            grade_info = tier
-            break
-    
-    if grade_info is None:
-        # Handle edge cases
-        if price_per_kw < SOLAR_PRICING_TIERS['A']['min']:
-            grade = 'A'
-            grade_info = SOLAR_PRICING_TIERS['A']
-        else:
-            grade = 'F'
-            grade_info = SOLAR_PRICING_TIERS['F']
-    
-    # Calculate potential savings
-    market_average = 2150  # £/kW market average
-    if price_per_kw > market_average:
-        potential_savings = (price_per_kw - market_average) * system_size
-    else:
-        potential_savings = 0
-    
-    # Build complete analysis
-    return {
-        'grade': grade,
-        'verdict': grade_info['description'],
-        'system_size': system_size,
-        'total_price': total_price,
-        'price_per_kw': round(price_per_kw, 2),
-        'market_average': market_average,
-        'potential_savings': round(potential_savings, 2),
-        'has_battery': has_battery,
-        'battery_brand': battery_brand,
-        'battery_quantity': battery_quantity,
-        'battery_capacity': battery_capacity
-    }
 
 def generate_magic_link_token(email, analysis_data):
     """Generate a JWT token for magic link authentication"""
@@ -269,10 +216,29 @@ def send_pdf_email(email, analysis_data):
         # Encode PDF to base64
         encoded_pdf = base64.b64encode(pdf_data).decode()
         
-        # Extract analysis data (now in flat structure with grade and verdict)
-        system_size = analysis_data.get('system_size', 0)
-        total_price = analysis_data.get('total_price', 0)
-        price_per_kw = analysis_data.get('price_per_kw', 0)
+        # Handle both nested and flat data structures
+        if 'analysis' in analysis_data:
+            # Nested structure
+            system_size = analysis_data['analysis'].get('system_size', 'N/A')
+            total_price = analysis_data['analysis'].get('total_price', 0)
+            price_per_kw = analysis_data['analysis'].get('price_per_kw', 0)
+        else:
+            # Flat structure - extract from string values
+            system_size = analysis_data.get('system_size', 'N/A')
+            total_price_str = analysis_data.get('total_cost', '£0')
+            price_per_kw_str = analysis_data.get('price_per_watt', '£0')
+            
+            # Convert strings to numbers for formatting
+            try:
+                total_price = float(total_price_str.replace('£', '').replace(',', ''))
+            except:
+                total_price = 0
+            
+            try:
+                price_per_kw = float(price_per_kw_str.replace('£', '').replace(',', ''))
+            except:
+                price_per_kw = 0
+        
         grade = analysis_data.get('grade', 'N/A')
         verdict = analysis_data.get('verdict', 'Analysis complete')
         
@@ -301,42 +267,23 @@ def send_pdf_email(email, analysis_data):
                         text-align: center;
                         border-radius: 8px 8px 0 0;
                     }}
-                    .grade-badge {{
-                        display: inline-block;
-                        font-size: 48px;
-                        font-weight: bold;
-                        background: white;
-                        color: #14b8a6;
-                        width: 80px;
-                        height: 80px;
-                        line-height: 80px;
-                        border-radius: 50%;
-                        margin: 20px 0;
-                    }}
                     .content {{
                         background: #f9f9f9;
                         padding: 30px;
+                        border-radius: 0 0 8px 8px;
+                    }}
+                    .grade {{
+                        font-size: 48px;
+                        font-weight: bold;
+                        text-align: center;
+                        color: #14b8a6;
+                        margin: 20px 0;
                     }}
                     .analysis-box {{
                         background: white;
-                        border-radius: 8px;
                         padding: 20px;
+                        border-radius: 8px;
                         margin: 20px 0;
-                        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-                    }}
-                    .metric {{
-                        display: inline-block;
-                        width: 48%;
-                        margin: 10px 0;
-                    }}
-                    .metric-label {{
-                        color: #666;
-                        font-size: 14px;
-                    }}
-                    .metric-value {{
-                        color: #333;
-                        font-size: 24px;
-                        font-weight: bold;
                     }}
                     .footer {{
                         text-align: center;
@@ -350,40 +297,47 @@ def send_pdf_email(email, analysis_data):
                 <div class="container">
                     <div class="header">
                         <h1>Solar✓erify</h1>
-                        <div class="grade-badge">{grade}</div>
-                        <h2>{verdict}</h2>
+                        <p>Your Solar Quote Analysis Results</p>
                     </div>
                     <div class="content">
-                        <h2>Your Quote Analysis Results</h2>
-                        
+                        <h2>Your Quote Grade</h2>
+                        <div class="grade">Grade {grade}</div>
                         <div class="analysis-box">
-                            <div class="metric">
-                                <div class="metric-label">System Size</div>
-                                <div class="metric-value">{system_size} kW</div>
-                            </div>
-                            <div class="metric">
-                                <div class="metric-label">Total Price</div>
-                                <div class="metric-value">£{total_price:,.0f}</div>
-                            </div>
-                            <div class="metric">
-                                <div class="metric-label">Price per kW</div>
-                                <div class="metric-value">£{price_per_kw:,.2f}</div>
-                            </div>
+                            <p><strong>System Size:</strong> {system_size}</p>
+                            <p><strong>Total Price:</strong> £{total_price:,.0f}</p>
+                            <p><strong>Price per kW:</strong> £{price_per_kw:.2f}</p>
+                            <p><strong>Verdict:</strong> {verdict}</p>
                         </div>
-                        
                         <h3>📄 Your Free Solar Buyer's Guide</h3>
-                        <p>We've attached our comprehensive Solar Buyer's Guide PDF with 7 critical red flags to watch for when reviewing solar quotes.</p>
-                        
-                        <p><strong>What's inside:</strong></p>
+                        <p>We've attached "The Complete Solar Quote Buyer's Guide" to this email. This comprehensive guide will help you:</p>
                         <ul>
-                            <li>7 Red Flags in Solar Quotes</li>
-                            <li>How to spot overpricing</li>
-                            <li>Questions to ask installers</li>
-                            <li>Industry pricing benchmarks</li>
-                            <li>Warranty and guarantee checklist</li>
+                            <li>Identify fair pricing and avoid overpriced quotes</li>
+                            <li>Recognize quality equipment vs poor components</li>
+                            <li>Spot installer red flags and warning signs</li>
+                            <li>Negotiate better deals and protect your investment</li>
                         </ul>
-                        
-                        <p style="margin-top: 30px;">Need help? Reply to this email or visit our website for more information.</p>
+                        <h3>🚀 Want More Detailed Analysis?</h3>
+                        <p style="margin-bottom: 10px;">
+                            <span style="text-decoration: line-through; color: #888;">£49.99</span>
+                            <strong style="font-size: 24px; color: #14b8a6; margin-left: 10px;">£24.99</strong>
+                        </p>
+                        <p style="background: #fef3c7; border-left: 4px solid #f59e0b; padding: 10px; margin: 15px 0; border-radius: 4px;">
+                            <strong>🔥 LAUNCH SPECIAL - SAVE £25</strong>
+                        </p>
+                        <p>Upgrade to our Premium Analysis for:</p>
+                        <ul>
+                            <li>15+ page detailed PDF report</li>
+                            <li>Component-by-component breakdown</li>
+                            <li>Installer reputation check</li>
+                            <li>Personalized negotiation strategies</li>
+                            <li>Direct access to solar experts</li>
+                        </ul>
+                        <p style="text-align: center; margin-top: 30px;">
+                            <a href="{FRONTEND_URL}/upgrade" style="background: #14b8a6; color: white; padding: 15px 30px; text-decoration: none; border-radius: 5px; display: inline-block; font-weight: bold;">Upgrade to Premium - £24.99</a>
+                        </p>
+                        <p style="text-align: center; color: #666; font-size: 12px; margin-top: 10px;">
+                            One-off payment • Instant unlock • 30-day money-back guarantee
+                        </p>
                     </div>
                     <div class="footer">
                         <p>© 2024 Solar✓erify Ltd. All rights reserved.</p>
@@ -416,7 +370,7 @@ def home():
     return jsonify({
         'service': 'Solar Verify Analysis API',
         'status': 'operational',
-        'version': '2.1.0 - Fixed Analysis Storage',
+        'version': '2.0.0 - Magic Link',
         'endpoints': {
             'health': '/api/health',
             'analyze': '/api/analyze-quote',
@@ -444,30 +398,7 @@ def send_magic_link():
         if not email:
             return jsonify({'error': 'Email is required'}), 400
         
-        # Get raw analysis data from frontend
-        raw_analysis_data = data.get('analysis_data', {})
-        
-        # Extract values
-        system_size = float(raw_analysis_data.get('system_size', 0))
-        total_price = float(raw_analysis_data.get('total_price', 0))
-        has_battery = raw_analysis_data.get('has_battery', False)
-        battery_brand = raw_analysis_data.get('battery_brand', '')
-        battery_quantity = int(raw_analysis_data.get('battery_quantity', 0))
-        battery_capacity = float(raw_analysis_data.get('battery_capacity', 0))
-        
-        # Validate
-        if system_size <= 0 or total_price <= 0:
-            return jsonify({'error': 'Invalid system size or price'}), 400
-        
-        # Calculate complete analysis with grade and verdict
-        complete_analysis = calculate_analysis(
-            system_size=system_size,
-            total_price=total_price,
-            has_battery=has_battery,
-            battery_brand=battery_brand,
-            battery_quantity=battery_quantity,
-            battery_capacity=battery_capacity
-        )
+        analysis_data = data.get('analysis_data')
         
         # Check if email has been verified before (within last 24 hours)
         if email in verified_emails:
@@ -477,23 +408,23 @@ def send_magic_link():
             # If verified within last 24 hours, skip email verification
             if time_since_verification.total_seconds() < 86400:  # 24 hours
                 # Send PDF directly without verification
-                if send_pdf_email(email, complete_analysis):
+                if send_pdf_email(email, analysis_data):
                     return jsonify({
                         'success': True,
                         'already_verified': True,
                         'message': 'Email already verified! Check your inbox for the PDF guide.',
-                        'analysis_data': complete_analysis
+                        'analysis_data': analysis_data
                     })
                 else:
                     return jsonify({'error': 'Failed to send PDF'}), 500
         
-        # Generate magic link token with COMPLETE analysis (including grade and verdict)
-        token = generate_magic_link_token(email, complete_analysis)
+        # Generate magic link token for new or expired verifications
+        token = generate_magic_link_token(email, analysis_data)
         
-        # Store complete analysis data for persistence
+        # Store analysis data for persistence
         analysis_storage[token] = {
             'email': email,
-            'analysis_data': complete_analysis,
+            'analysis_data': analysis_data,
             'timestamp': datetime.utcnow().isoformat()
         }
         
@@ -547,7 +478,7 @@ def verify_token():
             else:
                 return jsonify({'error': 'Failed to send PDF'}), 500
         
-        # Return success with COMPLETE analysis data (including grade and verdict)
+        # Return success with analysis data (whether PDF was just sent or already sent)
         return jsonify({
             'success': True,
             'message': 'Email verified successfully! Check your email for the PDF guide.',
@@ -593,148 +524,307 @@ def analyze_quote():
             battery_quantity = 0
             battery_capacity = 0
         
-        # Use the centralized calculation function
-        complete_analysis = calculate_analysis(
-            system_size=system_size,
-            total_price=total_price,
-            has_battery=has_battery,
-            battery_brand=battery_brand,
-            battery_quantity=battery_quantity,
-            battery_capacity=battery_capacity
-        )
+        # Calculate price per kW (now safe from division by zero)
+        price_per_kw = total_price / system_size
+        
+        # Determine grade based on price per kW
+        grade = 'F'  # Default to worst grade
+        grade_info = None
+        
+        for grade_letter, tier in SOLAR_PRICING_TIERS.items():
+            if tier['min'] <= price_per_kw <= tier['max']:
+                grade = grade_letter
+                grade_info = tier
+                break
+        
+        if grade_info is None:
+            # Handle edge cases
+            if price_per_kw < SOLAR_PRICING_TIERS['A']['min']:
+                grade = 'A'
+                grade_info = SOLAR_PRICING_TIERS['A']
+            else:
+                grade = 'F'
+                grade_info = SOLAR_PRICING_TIERS['F']
+        
+        # Calculate potential savings
+        market_average = 2150  # £/kW market average
+        if price_per_kw > market_average:
+            potential_savings = (price_per_kw - market_average) * system_size
+        else:
+            potential_savings = 0
+        
+        # Build response
+        response = {
+            'grade': grade,
+            'verdict': grade_info['description'],
+            'analysis': {
+                'system_size': system_size,
+                'total_price': total_price,
+                'price_per_kw': round(price_per_kw, 2),
+                'market_average': market_average,
+                'potential_savings': round(potential_savings, 2),
+                'has_battery': has_battery
+            },
+            'recommendations': []
+        }
         
         # Add recommendations based on grade
-        recommendations = []
-        if complete_analysis['grade'] in ['D', 'F']:
-            recommendations.append('Consider negotiating the price')
-            recommendations.append('Get additional quotes for comparison')
+        if grade in ['D', 'F']:
+            response['recommendations'].append('Consider negotiating the price')
+            response['recommendations'].append('Get additional quotes for comparison')
         
-        if complete_analysis['potential_savings'] > 1000:
-            recommendations.append(f'You could save up to £{complete_analysis["potential_savings"]:,.0f} with better pricing')
-        
-        # Build response with nested structure for backwards compatibility
-        response = {
-            'grade': complete_analysis['grade'],
-            'verdict': complete_analysis['verdict'],
-            'analysis': {
-                'system_size': complete_analysis['system_size'],
-                'total_price': complete_analysis['total_price'],
-                'price_per_kw': complete_analysis['price_per_kw'],
-                'market_average': complete_analysis['market_average'],
-                'potential_savings': complete_analysis['potential_savings'],
-                'has_battery': complete_analysis['has_battery']
-            },
-            'recommendations': recommendations
-        }
+        if potential_savings > 1000:
+            response['recommendations'].append(f'You could save up to £{potential_savings:,.0f} with better pricing')
         
         return jsonify(response)
         
     except Exception as e:
         return jsonify({'error': f'Analysis failed: {str(e)}'}), 500
 
-@app.route('/create-checkout-session', methods=['POST'])
-def create_checkout_session():
-    """Create a Stripe checkout session for premium upgrade"""
+@app.route('/api/analyze-premium-quote', methods=['POST'])
+def analyze_premium_quote():
+    """Analyze a premium solar quote with detailed component assessment"""
     try:
-        data = request.json
-        email = data.get('email')
+        data = request.get_json()
         
-        if not email:
-            return jsonify({'error': 'Email is required'}), 400
+        # Validate required basic fields
+        required_fields = ['system_size', 'total_price', 'user_email']
+        for field in required_fields:
+            if field not in data:
+                return jsonify({'error': f'Missing required field: {field}'}), 400
         
-        # Create Stripe checkout session
-        checkout_session = stripe.checkout.Session.create(
-            payment_method_types=['card'],
-            line_items=[{
-                'price_data': {
-                    'currency': 'gbp',
-                    'unit_amount': 2499,  # £24.99 in pence
-                    'product_data': {
-                        'name': 'Premium Solar Quote Analysis',
-                        'description': 'Detailed analysis with panel brand assessment, inverter quality check, battery evaluation, and personalized recommendations',
-                        'images': ['https://solarverify.co.uk/logo.png'],
-                    },
-                },
-                'quantity': 1,
-            }],
-            mode='payment',
-            success_url=f'{FRONTEND_URL}/premium-success?session_id={{CHECKOUT_SESSION_ID}}',
-            cancel_url=f'{FRONTEND_URL}/analyzer?upgrade=cancelled',
-            customer_email=email,
-            metadata={
-                'email': email,
-                'product': 'premium_analysis'
+        # Parse basic fields
+        system_size = float(data['system_size'])
+        total_price = float(data['total_price'])
+        user_email = data['user_email']
+        location = data.get('location', '')
+        
+        # Validate basic values
+        if system_size <= 0:
+            return jsonify({'error': 'System size must be greater than 0'}), 400
+        if total_price <= 0:
+            return jsonify({'error': 'Total price must be greater than 0'}), 400
+        
+        # Parse premium fields - Panel details
+        panel_brand = data.get('panel_brand', '')
+        panel_model = data.get('panel_model', '')
+        panel_wattage = float(data.get('panel_wattage', 0))
+        panel_quantity = int(data.get('panel_quantity', 0))
+        
+        # Parse premium fields - Inverter details
+        inverter_brand = data.get('inverter_brand', '')
+        inverter_model = data.get('inverter_model', '')
+        inverter_type = data.get('inverter_type', '')
+        inverter_capacity = float(data.get('inverter_capacity', 0))
+        
+        # Parse premium fields - Battery details
+        has_battery = data.get('has_battery', False)
+        battery_brand = data.get('battery_brand', '')
+        battery_model = data.get('battery_model', '')
+        battery_capacity = float(data.get('battery_capacity', 0)) if has_battery else 0
+        battery_quantity = int(data.get('battery_quantity', 0)) if has_battery else 0
+        battery_warranty = int(data.get('battery_warranty', 0)) if has_battery else 0
+        
+        # Parse premium fields - Installation details
+        scaffolding_included = data.get('scaffolding_included', False)
+        scaffolding_cost = float(data.get('scaffolding_cost', 0)) if scaffolding_included else 0
+        bird_protection_included = data.get('bird_protection_included', False)
+        bird_protection_cost = float(data.get('bird_protection_cost', 0)) if bird_protection_included else 0
+        roof_type = data.get('roof_type', '')
+        roof_material = data.get('roof_material', '')
+        
+        # Parse premium fields - Installer information
+        installer_company = data.get('installer_company', '')
+        installer_location = data.get('installer_location', '')
+        installer_mcs = data.get('installer_mcs', '')
+        installer_years_in_business = int(data.get('installer_years_in_business', 0))
+        installer_warranty_years = int(data.get('installer_warranty_years', 0))
+        installation_timeline = data.get('installation_timeline', '')
+        
+        # Calculate price per kW
+        price_per_kw = total_price / system_size
+        
+        # Determine grade based on price per kW
+        grade = 'F'
+        grade_info = None
+        
+        for grade_letter, tier in SOLAR_PRICING_TIERS.items():
+            if tier['min'] <= price_per_kw <= tier['max']:
+                grade = grade_letter
+                grade_info = tier
+                break
+        
+        if grade_info is None:
+            if price_per_kw < SOLAR_PRICING_TIERS['A']['min']:
+                grade = 'A'
+                grade_info = SOLAR_PRICING_TIERS['A']
+            else:
+                grade = 'F'
+                grade_info = SOLAR_PRICING_TIERS['F']
+        
+        # Calculate potential savings
+        market_average = 2150
+        potential_savings = max(0, (price_per_kw - market_average) * system_size)
+        
+        # Premium analysis - Component assessment
+        component_analysis = {}
+        red_flags = []
+        things_to_consider = []
+        questions_to_ask = []
+        
+        # Panel analysis
+        if panel_brand and panel_model:
+            # Calculate expected system size from panels
+            calculated_system_size = (panel_wattage * panel_quantity) / 1000
+            size_difference = abs(calculated_system_size - system_size)
+            
+            component_analysis['panels'] = {
+                'brand': panel_brand,
+                'model': panel_model,
+                'wattage': panel_wattage,
+                'quantity': panel_quantity,
+                'calculated_system_size': round(calculated_system_size, 2),
+                'matches_quoted_size': size_difference < 0.5
             }
-        )
-        
-        return jsonify({
-            'sessionId': checkout_session.id,
-            'url': checkout_session.url
-        })
-        
-    except Exception as e:
-        return jsonify({'error': f'Failed to create checkout session: {str(e)}'}), 500
-
-@app.route('/verify-payment', methods=['POST'])
-def verify_payment():
-    """Verify Stripe payment and grant premium access"""
-    try:
-        data = request.json
-        session_id = data.get('session_id')
-        
-        if not session_id:
-            return jsonify({'error': 'Session ID is required'}), 400
-        
-        # Retrieve the session from Stripe
-        session = stripe.checkout.Session.retrieve(session_id)
-        
-        if session.payment_status == 'paid':
-            email = session.customer_email or session.metadata.get('email')
             
-            # Store premium access
-            premium_payments[email] = {
-                'session_id': session_id,
-                'payment_status': 'paid',
-                'timestamp': datetime.now().isoformat(),
-                'amount': session.amount_total,
-                'currency': session.currency
+            if size_difference >= 0.5:
+                red_flags.append(f'System size mismatch: {panel_quantity} x {panel_wattage}W panels = {calculated_system_size:.2f}kW, but quote states {system_size}kW')
+                questions_to_ask.append('Can you clarify the discrepancy between the number of panels and the stated system size?')
+        
+        # Inverter analysis
+        if inverter_brand and inverter_model:
+            # Check inverter sizing (should be 80-110% of panel capacity)
+            inverter_ratio = (inverter_capacity / system_size) * 100 if system_size > 0 else 0
+            
+            component_analysis['inverter'] = {
+                'brand': inverter_brand,
+                'model': inverter_model,
+                'type': inverter_type,
+                'capacity': inverter_capacity,
+                'sizing_ratio': round(inverter_ratio, 1),
+                'properly_sized': 80 <= inverter_ratio <= 110
             }
             
-            return jsonify({
-                'success': True,
-                'email': email,
-                'premium_access': True,
-                'message': 'Payment verified successfully'
-            })
-        else:
-            return jsonify({
-                'success': False,
-                'message': 'Payment not completed'
-            }), 400
+            if inverter_ratio < 80:
+                red_flags.append(f'Inverter may be undersized: {inverter_capacity}kW inverter for {system_size}kW system ({inverter_ratio:.0f}% ratio)')
+                things_to_consider.append('An undersized inverter may limit system performance and energy production')
+            elif inverter_ratio > 110:
+                things_to_consider.append(f'Inverter is oversized ({inverter_ratio:.0f}% ratio), which may increase costs without significant benefit')
+        
+        # Battery analysis
+        if has_battery:
+            total_battery_capacity = battery_capacity * battery_quantity
+            # Typical recommendation: 1-2 kWh per kW of solar
+            recommended_min = system_size * 1
+            recommended_max = system_size * 2
             
+            component_analysis['battery'] = {
+                'brand': battery_brand,
+                'model': battery_model,
+                'capacity_per_unit': battery_capacity,
+                'quantity': battery_quantity,
+                'total_capacity': round(total_battery_capacity, 1),
+                'warranty_years': battery_warranty,
+                'sizing_appropriate': recommended_min <= total_battery_capacity <= recommended_max * 1.5
+            }
+            
+            if total_battery_capacity < recommended_min:
+                things_to_consider.append(f'Battery capacity ({total_battery_capacity:.1f}kWh) is below typical recommendation ({recommended_min:.1f}-{recommended_max:.1f}kWh for a {system_size}kW system)')
+                questions_to_ask.append('Have you calculated the battery size based on your actual energy consumption patterns?')
+            
+            if battery_warranty < 10:
+                things_to_consider.append(f'Battery warranty is {battery_warranty} years. Many premium batteries offer 10+ year warranties')
+        
+        # Installation details analysis
+        installation_analysis = {}
+        
+        if scaffolding_included:
+            scaffolding_per_kw = scaffolding_cost / system_size if system_size > 0 else 0
+            installation_analysis['scaffolding'] = {
+                'cost': scaffolding_cost,
+                'cost_per_kw': round(scaffolding_per_kw, 2)
+            }
+            if scaffolding_per_kw > 150:
+                things_to_consider.append(f'Scaffolding cost (£{scaffolding_cost}) seems high at £{scaffolding_per_kw:.0f}/kW')
+        
+        if bird_protection_included:
+            installation_analysis['bird_protection'] = {
+                'cost': bird_protection_cost
+            }
+            if bird_protection_cost > 500:
+                things_to_consider.append(f'Bird protection cost (£{bird_protection_cost}) is above typical market rates (£200-400)')
+        
+        if roof_type:
+            installation_analysis['roof'] = {
+                'type': roof_type,
+                'material': roof_material
+            }
+        
+        # Installer analysis
+        installer_analysis = {
+            'company': installer_company,
+            'location': installer_location,
+            'mcs_registered': bool(installer_mcs),
+            'mcs_number': installer_mcs,
+            'years_in_business': installer_years_in_business,
+            'warranty_years': installer_warranty_years,
+            'installation_timeline': installation_timeline
+        }
+        
+        if not installer_mcs:
+            red_flags.append('Installer does not appear to be MCS certified - this is REQUIRED for SEG payments and government incentives')
+            questions_to_ask.append('Can you provide your MCS certification number? This is essential for claiming SEG payments.')
+        
+        if installer_years_in_business < 2:
+            things_to_consider.append(f'Installer has been in business for {installer_years_in_business} year(s). Consider checking reviews and references')
+        
+        if installer_warranty_years < 5:
+            things_to_consider.append(f'Installation warranty is {installer_warranty_years} years. Industry standard is typically 5-10 years')
+            questions_to_ask.append('What does the installation warranty cover, and can it be extended?')
+        
+        # Build comprehensive response
+        response = {
+            'success': True,
+            'grade': grade,
+            'verdict': grade_info['description'],
+            'basic_analysis': {
+                'system_size': system_size,
+                'total_price': total_price,
+                'price_per_kw': round(price_per_kw, 2),
+                'market_average': market_average,
+                'potential_savings': round(potential_savings, 2),
+                'location': location
+            },
+            'component_analysis': component_analysis,
+            'installation_analysis': installation_analysis,
+            'installer_analysis': installer_analysis,
+            'red_flags': red_flags,
+            'things_to_consider': things_to_consider,
+            'questions_to_ask': questions_to_ask,
+            'user_email': user_email
+        }
+        
+        # Generate and send PDF report via email
+        try:
+            sendgrid_api_key = os.environ.get('SENDGRID_API_KEY')
+            if sendgrid_api_key:
+                sg = SendGridAPIClient(sendgrid_api_key)
+                email_sent = send_premium_report_email(user_email, response, sg)
+                response['email_sent'] = email_sent
+            else:
+                response['email_sent'] = False
+                response['email_error'] = 'SendGrid API key not configured'
+        except Exception as email_error:
+            print(f"Error sending premium report email: {str(email_error)}")
+            response['email_sent'] = False
+            response['email_error'] = str(email_error)
+        
+        return jsonify(response)
+        
     except Exception as e:
-        return jsonify({'error': f'Failed to verify payment: {str(e)}'}), 500
-
-@app.route('/check-premium-access', methods=['POST'])
-def check_premium_access():
-    """Check if user has premium access"""
-    try:
-        data = request.json
-        email = data.get('email')
-        
-        if not email:
-            return jsonify({'error': 'Email is required'}), 400
-        
-        has_premium = email in premium_payments and premium_payments[email]['payment_status'] == 'paid'
-        
-        return jsonify({
-            'has_premium_access': has_premium,
-            'email': email
-        })
-        
-    except Exception as e:
-        return jsonify({'error': f'Failed to check premium access: {str(e)}'}), 500
+        return jsonify({'error': f'Premium analysis failed: {str(e)}'}), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
+
