@@ -51,7 +51,7 @@ def generate_magic_link_token(email, analysis_data):
     payload = {
         'email': email,
         'analysis_data': analysis_data,
-        'exp': datetime.utcnow() + timedelta(minutes=10),  # 10 minute expiration
+        'exp': datetime.utcnow() + timedelta(hours=24),  # 24 hour expiration for cross-device access
         'iat': datetime.utcnow(),
         'jti': jti  # JWT ID for single-use enforcement
     }
@@ -85,9 +85,8 @@ def cleanup_expired_data():
 def verify_magic_link_token(token, mark_as_used=True):
     """Verify and decode JWT token"""
     try:
-        # Check if token has already been used for PDF delivery
-        if mark_as_used and token in used_tokens:
-            return None, 'Token has already been used'
+        # Allow token reuse for cross-device access
+        # Single-use enforcement removed to support opening links on different devices
         
         # Decode and verify token
         payload = jwt.decode(token, JWT_SECRET, algorithms=['HS256'])
@@ -217,27 +216,24 @@ def send_pdf_email(email, analysis_data):
         encoded_pdf = base64.b64encode(pdf_data).decode()
         
         # Handle both nested and flat data structures
-        if 'analysis' in analysis_data:
-            # Nested structure
+        # Try flat structure first (new format)
+        system_size = analysis_data.get('system_size')
+        total_price = analysis_data.get('total_price')
+        price_per_kw = analysis_data.get('price_per_kw')
+        
+        # Fall back to nested structure if flat values not found
+        if system_size is None and 'analysis' in analysis_data:
             system_size = analysis_data['analysis'].get('system_size', 'N/A')
             total_price = analysis_data['analysis'].get('total_price', 0)
             price_per_kw = analysis_data['analysis'].get('price_per_kw', 0)
-        else:
-            # Flat structure - extract from string values
-            system_size = analysis_data.get('system_size', 'N/A')
-            total_price_str = analysis_data.get('total_cost', '£0')
-            price_per_kw_str = analysis_data.get('price_per_watt', '£0')
-            
-            # Convert strings to numbers for formatting
-            try:
-                total_price = float(total_price_str.replace('£', '').replace(',', ''))
-            except:
-                total_price = 0
-            
-            try:
-                price_per_kw = float(price_per_kw_str.replace('£', '').replace(',', ''))
-            except:
-                price_per_kw = 0
+        
+        # Set defaults if still not found
+        if system_size is None:
+            system_size = 'N/A'
+        if total_price is None:
+            total_price = 0
+        if price_per_kw is None:
+            price_per_kw = 0
         
         grade = analysis_data.get('grade', 'N/A')
         verdict = analysis_data.get('verdict', 'Analysis complete')
@@ -553,10 +549,18 @@ def analyze_quote():
         else:
             potential_savings = 0
         
-        # Build response
+        # Build response (flattened structure for frontend compatibility)
         response = {
             'grade': grade,
             'verdict': grade_info['description'],
+            'system_size': system_size,
+            'total_price': total_price,
+            'price_per_kw': round(price_per_kw, 2),
+            'market_average': market_average,
+            'potential_savings': round(potential_savings, 2),
+            'has_battery': has_battery,
+            'recommendations': [],
+            # Also include nested structure for backward compatibility
             'analysis': {
                 'system_size': system_size,
                 'total_price': total_price,
@@ -564,8 +568,7 @@ def analyze_quote():
                 'market_average': market_average,
                 'potential_savings': round(potential_savings, 2),
                 'has_battery': has_battery
-            },
-            'recommendations': []
+            }
         }
         
         # Add recommendations based on grade
