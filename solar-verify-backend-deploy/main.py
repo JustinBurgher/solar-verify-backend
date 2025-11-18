@@ -17,8 +17,8 @@ CORS(app)  # Enable CORS for all routes
 # Configuration
 JWT_SECRET = os.environ.get('JWT_SECRET', 'your-secret-key-change-in-production')
 FRONTEND_URL = os.environ.get('FRONTEND_URL', 'https://solarverify.co.uk')
-STRIPE_SECRET_KEY = os.environ.get('STRIPE_SECRET_KEY')
-STRIPE_PUBLISHABLE_KEY = os.environ.get('STRIPE_PUBLISHABLE_KEY')
+STRIPE_SECRET_KEY = os.environ.get('STRIPE_SECRET_KEY', 'sk_test_51SUEW63AjmmTakKd7gU5IkTmTJMHNDMN2DBYqElcFmXmOprtQ22xWExu8XPDFSLx4ds5W0PbSV1ddF0u3lngiWto00U42uLG9J')
+STRIPE_PUBLISHABLE_KEY = os.environ.get('STRIPE_PUBLISHABLE_KEY', 'pk_test_51SUEW63AjmmTakKdTq4V8iPXsIQ2lHYIl5rGshAMlvwSqhJRJe3PFjyUgsLQOGlOLMzSsEwNHlKI3CdQq8OuQNUC00sDNBFKKx')
 
 # Initialize Stripe
 stripe.api_key = STRIPE_SECRET_KEY
@@ -878,7 +878,7 @@ def analyze_premium_quote():
     except Exception as e:
         return jsonify({'error': f'Premium analysis failed: {str(e)}'}), 500
 
-@app.route('/create-checkout-session', methods=['POST'])
+@app.route('/api/create-checkout-session', methods=['POST'])
 def create_checkout_session():
     """Create a Stripe checkout session for premium upgrade"""
     try:
@@ -921,7 +921,7 @@ def create_checkout_session():
     except Exception as e:
         return jsonify({'error': f'Failed to create checkout session: {str(e)}'}), 500
 
-@app.route('/verify-payment', methods=['POST'])
+@app.route('/api/verify-payment', methods=['POST'])
 def verify_payment():
     """Verify Stripe payment and grant premium access"""
     try:
@@ -961,7 +961,7 @@ def verify_payment():
     except Exception as e:
         return jsonify({'error': f'Failed to verify payment: {str(e)}'}), 500
 
-@app.route('/check-premium-access', methods=['POST'])
+@app.route('/api/check-premium-access', methods=['POST'])
 def check_premium_access():
     """Check if user has premium access"""
     try:
