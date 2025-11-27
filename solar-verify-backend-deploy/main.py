@@ -323,7 +323,7 @@ def send_pdf_email(email, analysis_data):
                         <h3>🚀 Want More Detailed Analysis?</h3>
                         <p style="margin-bottom: 10px;">
                             <span style="text-decoration: line-through; color: #888;">£49.99</span>
-                            <strong style="font-size: 24px; color: #14b8a6; margin-left: 10px;">£24.99</strong>
+                            <strong style="font-size: 24px; color: #14b8a6; margin-left: 10px;">£44.99</strong>
                         </p>
                         <p style="background: #fef3c7; border-left: 4px solid #f59e0b; padding: 10px; margin: 15px 0; border-radius: 4px;">
                             <strong>🔥 LAUNCH SPECIAL - SAVE £25</strong>
@@ -337,7 +337,7 @@ def send_pdf_email(email, analysis_data):
                             <li>Direct access to solar experts</li>
                         </ul>
                         <p style="text-align: center; margin-top: 30px;">
-                            <a href="{FRONTEND_URL}/upgrade" style="background: #14b8a6; color: white; padding: 15px 30px; text-decoration: none; border-radius: 5px; display: inline-block; font-weight: bold;">Upgrade to Premium - £24.99</a>
+                            <a href="{FRONTEND_URL}/upgrade" style="background: #14b8a6; color: white; padding: 15px 30px; text-decoration: none; border-radius: 5px; display: inline-block; font-weight: bold;">Upgrade to Premium - £44.99</a>
                         </p>
                         <p style="text-align: center; color: #666; font-size: 12px; margin-top: 10px;">
                             One-off payment • Instant unlock • 30-day money-back guarantee
@@ -875,7 +875,7 @@ def create_checkout_session():
             line_items=[{
                 'price_data': {
                     'currency': 'gbp',
-                    'unit_amount': 2499,  # £24.99 in pence
+                    'unit_amount': 2499,  # £44.99 in pence
                     'product_data': {
                         'name': 'Premium Solar Quote Analysis',
                         'description': 'Detailed analysis with panel brand assessment, inverter quality check, battery evaluation, and personalized recommendations',
