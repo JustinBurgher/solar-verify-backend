@@ -875,7 +875,7 @@ def create_checkout_session():
             line_items=[{
                 'price_data': {
                     'currency': 'gbp',
-                    'unit_amount': 2499,  # £44.99 in pence
+                    'unit_amount': 4499,  # £44.99 in pence
                     'product_data': {
                         'name': 'Premium Solar Quote Analysis',
                         'description': 'Detailed analysis with panel brand assessment, inverter quality check, battery evaluation, and personalized recommendations',
