@@ -532,9 +532,9 @@ def verify_token():
     except Exception as e:
         return jsonify({'error': f'Verification failed: {str(e)}'}), 500
 
-@app.route('/api/analyze-quote', methods=['POST'])
-def analyze_quote():
-    """Analyze a solar quote and return A-F grade with detailed breakdown"""
+@app.route('/api/analyse-quote', methods=['POST'])
+def analyse_quote():
+    """Analyse a solar quote and return A-F grade with detailed breakdown"""
     try:
         data = request.get_json()
         
