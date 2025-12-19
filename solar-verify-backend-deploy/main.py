@@ -10,6 +10,8 @@ from sendgrid.helpers.mail import Mail, Attachment, FileContent, FileName, FileT
 import base64
 import stripe
 from premium_pdf_generator import send_premium_report_email
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
 app = Flask(__name__)
 CORS(app, 
@@ -37,6 +39,42 @@ STRIPE_PUBLISHABLE_KEY = os.environ.get('STRIPE_PUBLISHABLE_KEY', 'pk_test_51SUE
 
 # Initialize Stripe
 stripe.api_key = STRIPE_SECRET_KEY
+
+# Database connection helper
+def get_db_connection():
+    """Get database connection from Railway Postgres"""
+    database_url = os.environ.get('DATABASE_URL')
+    if database_url:
+        return psycopg2.connect(database_url, cursor_factory=RealDictCursor)
+    return None
+
+# Initialize database table for feedback
+def init_feedback_table():
+    """Create feedback table if it doesn't exist"""
+    try:
+        conn = get_db_connection()
+        if conn:
+            cur = conn.cursor()
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS feedback (
+                    id SERIAL PRIMARY KEY,
+                    feedback_text TEXT NOT NULL,
+                    user_email VARCHAR(255),
+                    feedback_type VARCHAR(50),
+                    page VARCHAR(255),
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            conn.commit()
+            cur.close()
+            conn.close()
+            print("Feedback table initialized successfully")
+    except Exception as e:
+        print(f"Error initializing feedback table: {str(e)}")
+
+# Initialize table on startup
+init_feedback_table()
 
 # In-memory storage for used tokens and analysis data (use Redis or database in production)
 used_tokens = set()
@@ -979,80 +1017,51 @@ def check_premium_access():
 
 @app.route('/api/submit-feedback', methods=['POST'])
 def submit_feedback():
-    """Submit user feedback via email"""
+    """Submit user feedback and store in database"""
     try:
         data = request.json
         feedback_text = data.get('feedback', '')
         user_email = data.get('email', 'anonymous')
         feedback_type = data.get('type', 'general')
-        timestamp = data.get('timestamp', datetime.now().isoformat())
         page = data.get('page', 'unknown')
         
         if not feedback_text:
             return jsonify({'error': 'Feedback text is required'}), 400
         
-        # Send feedback email to admin
-        sg = SendGridAPIClient(os.environ.get('SENDGRID_API_KEY'))
-        
-        message = Mail(
-            from_email='justinburgher@solarverify.co.uk',
-            to_emails='justinburgher@solarverify.co.uk',
-            subject=f'SolarVerify Feedback: {feedback_type.title()}',
-            html_content=f'''
-            <html>
-            <head>
-                <style>
-                    body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
-                    .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
-                    .header {{ background: linear-gradient(135deg, #14b8a6 0%, #0891b2 100%); color: white; padding: 20px; border-radius: 8px 8px 0 0; }}
-                    .content {{ background: #f9fafb; padding: 20px; border-radius: 0 0 8px 8px; }}
-                    .field {{ margin-bottom: 15px; }}
-                    .label {{ font-weight: bold; color: #0891b2; }}
-                    .value {{ background: white; padding: 10px; border-radius: 4px; margin-top: 5px; }}
-                    .feedback-box {{ background: white; padding: 15px; border-left: 4px solid #0891b2; margin-top: 10px; }}
-                </style>
-            </head>
-            <body>
-                <div class="container">
-                    <div class="header">
-                        <h2>New Feedback Received</h2>
-                    </div>
-                    <div class="content">
-                        <div class="field">
-                            <div class="label">Type:</div>
-                            <div class="value">{feedback_type.title()}</div>
-                        </div>
-                        <div class="field">
-                            <div class="label">From:</div>
-                            <div class="value">{user_email}</div>
-                        </div>
-                        <div class="field">
-                            <div class="label">Page:</div>
-                            <div class="value">{page}</div>
-                        </div>
-                        <div class="field">
-                            <div class="label">Time:</div>
-                            <div class="value">{timestamp}</div>
-                        </div>
-                        <div class="field">
-                            <div class="label">Feedback:</div>
-                            <div class="feedback-box">{feedback_text}</div>
-                        </div>
-                    </div>
-                </div>
-            </body>
-            </html>
-            ''')
-        
-        response = sg.send(message)
-        
-        if response.status_code == 202:
+        # Store feedback in database
+        conn = get_db_connection()
+        if conn:
+            try:
+                cur = conn.cursor()
+                cur.execute('''
+                    INSERT INTO feedback (feedback_text, user_email, feedback_type, page)
+                    VALUES (%s, %s, %s, %s)
+                    RETURNING id
+                ''', (feedback_text, user_email, feedback_type, page))
+                feedback_id = cur.fetchone()['id']
+                conn.commit()
+                cur.close()
+                conn.close()
+                
+                print(f"Feedback #{feedback_id} stored: {feedback_type} from {user_email}")
+                
+                return jsonify({
+                    'success': True,
+                    'message': 'Thank you for your feedback! We appreciate you helping us improve SolarVerify.',
+                    'feedback_id': feedback_id
+                }), 200
+            except Exception as db_error:
+                print(f"Database error: {str(db_error)}")
+                conn.rollback()
+                conn.close()
+                return jsonify({'error': 'Failed to store feedback'}), 500
+        else:
+            # Fallback if database not available
+            print(f"Feedback received (no DB): {feedback_type} from {user_email}: {feedback_text}")
             return jsonify({
                 'success': True,
-                'message': 'Feedback submitted successfully'
+                'message': 'Thank you for your feedback!'
             }), 200
-        else:
-            return jsonify({'error': 'Failed to send feedback'}), 500
             
     except Exception as e:
         print(f"Error submitting feedback: {str(e)}")
