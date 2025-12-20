@@ -85,13 +85,65 @@ verified_emails = {}  # Tracks emails that have been verified
 # Store premium payments (email -> {session_id, payment_status, timestamp})
 premium_payments = {}  # Tracks premium purchases
 
-# UK Solar Market Data (September 2025)
+# UK Solar Market Data (December 2025) - Updated Verdict System
+# Price benchmarks per kWp installed (solar only)
+SOLAR_PRICE_BENCHMARKS = {
+    'low': {'min': 700, 'max': 900},      # Below market - verify inclusions
+    'normal': {'min': 900, 'max': 1200},  # Normal market range
+    'high': {'min': 1200, 'max': 1500}    # Above market
+}
+
+# Price benchmarks per kWh installed (battery only)
+BATTERY_PRICE_BENCHMARKS = {
+    'low': {'min': 400, 'max': 500},      # Below market - verify inclusions
+    'normal': {'min': 500, 'max': 750},   # Normal market range  
+    'high': {'min': 750, 'max': 1000}     # Above market
+}
+
+# Mid-market estimates for allocation when only total price is provided
+MID_MARKET_SOLAR_PER_KWP = 1050  # £/kWp
+MID_MARKET_BATTERY_PER_KWH = 600  # £/kWh
+BATTERY_ALLOCATION_ESTIMATE = 550  # £/kWh for estimating battery cost from total
+
+# Verdict definitions with user-friendly messaging
+VERDICT_DEFINITIONS = {
+    'UNDERPRICED': {
+        'label': 'Below Market Rate',
+        'icon': '⚠️',
+        'summary': 'This quote is priced below typical market rates. This could represent excellent value, but we recommend confirming exactly what\'s included before proceeding.',
+        'color': 'amber',
+        'grade': 'B+'  # Still show as good, but with caution
+    },
+    'GOOD_VALUE': {
+        'label': 'Competitive Pricing',
+        'icon': '✅',
+        'summary': 'This quote is competitively priced within the normal UK market range for similar systems.',
+        'color': 'green',
+        'grade': 'A'
+    },
+    'OVERPRICED': {
+        'label': 'Above Market Rate',
+        'icon': '❌',
+        'summary': 'This quote is priced above typical market rates. There may be room to negotiate or seek alternative quotes.',
+        'color': 'red',
+        'grade': 'D'
+    },
+    'INCOMPLETE': {
+        'label': 'More Details Needed',
+        'icon': '⚠️',
+        'summary': 'We couldn\'t fully assess this quote because some key details are missing. Please provide more information for a complete analysis.',
+        'color': 'gray',
+        'grade': 'N/A'
+    }
+}
+
+# Legacy grade mapping for backward compatibility
 SOLAR_PRICING_TIERS = {
-    'A': {'min': 1400, 'max': 1700, 'description': 'Excellent value - well below market average'},
-    'B': {'min': 1700, 'max': 2000, 'description': 'Good value - competitive pricing'},
-    'C': {'min': 2000, 'max': 2300, 'description': 'Fair value - around market average'},
-    'D': {'min': 2300, 'max': 2600, 'description': 'Above average - consider negotiating'},
-    'F': {'min': 2600, 'max': 5000, 'description': 'Overpriced - significant savings possible'}
+    'A': {'min': 700, 'max': 1000, 'description': 'Competitive pricing - within normal market range'},
+    'B': {'min': 1000, 'max': 1200, 'description': 'Good value - competitive pricing'},
+    'C': {'min': 1200, 'max': 1400, 'description': 'Fair value - around market average'},
+    'D': {'min': 1400, 'max': 1600, 'description': 'Above market rate - room to negotiate'},
+    'F': {'min': 1600, 'max': 5000, 'description': 'Significantly above market - seek alternative quotes'}
 }
 
 BATTERY_BRANDS = {
@@ -103,6 +155,126 @@ BATTERY_BRANDS = {
     'GivEnergy': {'capacity': 9.5, 'efficiency': 0.93},
     'Other': {'capacity': 10.0, 'efficiency': 0.9}  # Default for custom
 }
+
+# ============================================
+# VERDICT DETERMINATION FUNCTIONS
+# ============================================
+
+def determine_verdict(solar_cost_per_kwp, battery_cost_per_kwh, battery_kwh, total_price, expected_total):
+    """Determine the verdict based on pricing analysis
+    
+    UNDERPRICED triggers if at least 2 of these are true:
+    1. solar_cost_per_kwp < 750
+    2. battery_cost_per_kwh < 400 (only if battery exists)
+    3. total_price is >30% below expected mid-market estimate
+    
+    GOOD_VALUE if within normal market range
+    OVERPRICED if above normal market range
+    """
+    
+    underpriced_signals = 0
+    
+    # Signal 1: Solar cost significantly below market
+    if solar_cost_per_kwp < 750:
+        underpriced_signals += 1
+    
+    # Signal 2: Battery cost significantly below market (only if battery exists)
+    if battery_kwh > 0 and battery_cost_per_kwh < 400:
+        underpriced_signals += 1
+    
+    # Signal 3: Total price >30% below expected
+    if expected_total > 0 and total_price < (expected_total * 0.70):
+        underpriced_signals += 1
+    
+    # UNDERPRICED: At least 2 signals triggered
+    if underpriced_signals >= 2:
+        return 'UNDERPRICED'
+    
+    # Check for OVERPRICED
+    overpriced = False
+    
+    # Solar above high range (>1200/kWp)
+    if solar_cost_per_kwp > SOLAR_PRICE_BENCHMARKS['high']['min']:
+        overpriced = True
+    
+    # Battery above high range (>750/kWh) - only if battery exists
+    if battery_kwh > 0 and battery_cost_per_kwh > BATTERY_PRICE_BENCHMARKS['high']['min']:
+        overpriced = True
+    
+    # Total >20% above expected
+    if expected_total > 0 and total_price > (expected_total * 1.20):
+        overpriced = True
+    
+    if overpriced:
+        return 'OVERPRICED'
+    
+    # Default to GOOD_VALUE (within normal range)
+    return 'GOOD_VALUE'
+
+
+def generate_recommendations(verdict_type, solar_cost_per_kwp, battery_cost_per_kwh, delta_vs_expected):
+    """Generate dynamic recommendations based on verdict and analysis"""
+    recommendations = []
+    
+    if verdict_type == 'UNDERPRICED':
+        recommendations.append('Request a detailed breakdown of what\'s included in the price')
+        recommendations.append('Confirm scaffolding, DNO/G99 application, and MCS certification are included')
+        recommendations.append('Check warranty terms for panels, inverter, and workmanship')
+        recommendations.append('Verify the installer\'s MCS registration and reviews')
+    
+    elif verdict_type == 'GOOD_VALUE':
+        recommendations.append('This appears to be a fair price for the system specified')
+        if delta_vs_expected < -10:
+            recommendations.append('Slightly below average pricing - good negotiation or competitive installer')
+        elif delta_vs_expected > 10:
+            recommendations.append('Slightly above average - you may be able to negotiate 5-10% off')
+        recommendations.append('Still worth getting 2-3 quotes to compare')
+    
+    elif verdict_type == 'OVERPRICED':
+        recommendations.append('This quote appears to be above market rates')
+        if solar_cost_per_kwp > 1400:
+            recommendations.append(f'Solar pricing (£{solar_cost_per_kwp:.0f}/kWp) is significantly above the £900-1200/kWp normal range')
+        if battery_cost_per_kwh and battery_cost_per_kwh > 800:
+            recommendations.append(f'Battery pricing (£{battery_cost_per_kwh:.0f}/kWh) is above the £500-750/kWh normal range')
+        recommendations.append('We recommend getting additional quotes for comparison')
+        recommendations.append('Consider negotiating - there may be room to reduce the price')
+    
+    return recommendations
+
+
+def generate_next_checks(verdict_type, has_battery):
+    """Generate a list of next steps/checks based on verdict"""
+    checks = []
+    
+    if verdict_type == 'UNDERPRICED':
+        checks.append('Confirm scaffolding is included')
+        checks.append('Confirm DNO/G99 notification is included')
+        checks.append('Confirm MCS certification will be provided')
+        checks.append('Check panel and inverter warranty terms')
+        checks.append('Verify workmanship warranty (minimum 2 years recommended)')
+        checks.append('Ask about bird proofing if needed')
+        if has_battery:
+            checks.append('Confirm battery warranty (typically 10 years)')
+    
+    elif verdict_type == 'GOOD_VALUE':
+        checks.append('Review the full specification matches your requirements')
+        checks.append('Check installer reviews and MCS registration')
+        checks.append('Confirm payment terms and deposit amount')
+    
+    elif verdict_type == 'OVERPRICED':
+        checks.append('Get 2-3 additional quotes for comparison')
+        checks.append('Ask the installer to justify the pricing')
+        checks.append('Check if premium components justify the higher price')
+        checks.append('Consider negotiating or requesting a price match')
+    
+    elif verdict_type == 'INCOMPLETE':
+        checks.append('Confirm total system size (kWp)')
+        checks.append('Confirm total price including VAT and installation')
+        if has_battery:
+            checks.append('Confirm battery capacity (kWh)')
+    
+    return checks
+
 
 def generate_magic_link_token(email, analysis_data):
     """Generate a JWT token for magic link authentication"""
@@ -572,97 +744,145 @@ def verify_token():
 
 @app.route('/api/analyse-quote', methods=['POST'])
 def analyse_quote():
-    """Analyse a solar quote and return A-F grade with detailed breakdown"""
+    """Analyse a solar quote and return verdict with detailed breakdown
+    
+    New 4-verdict system (December 2025):
+    - UNDERPRICED: Below market rate, verify what's included
+    - GOOD_VALUE: Competitive pricing within normal range
+    - OVERPRICED: Above market rate, room to negotiate
+    - INCOMPLETE: Missing key details for full assessment
+    """
     try:
         data = request.get_json()
         
-        # Validate required fields
-        required_fields = ['system_size', 'total_price']
-        for field in required_fields:
-            if field not in data:
-                return jsonify({'error': f'Missing required field: {field}'}), 400
-        
-        # Parse and validate numeric values
-        try:
-            system_size = float(data['system_size'])
-            total_price = float(data['total_price'])
-        except (ValueError, TypeError) as e:
-            return jsonify({'error': f'Invalid numeric value: {str(e)}'}), 400
-        
-        # Validate system_size is not zero to prevent division by zero
-        if system_size <= 0:
-            return jsonify({'error': 'System size must be greater than 0'}), 400
-        
-        if total_price <= 0:
-            return jsonify({'error': 'Total price must be greater than 0'}), 400
-        
+        # Extract all available fields
+        system_size = data.get('system_size')
+        total_price = data.get('total_price')
         has_battery = data.get('has_battery', False)
         battery_brand = data.get('battery_brand', '')
+        battery_quantity = data.get('battery_quantity', 0)
+        battery_capacity = data.get('battery_capacity', 0)
+        
+        # Parse numeric values safely
         try:
-            battery_quantity = int(data.get('battery_quantity', 0))
-            battery_capacity = float(data.get('battery_capacity', 0))
+            system_size = float(system_size) if system_size else None
+            total_price = float(total_price) if total_price else None
+            battery_quantity = int(battery_quantity) if battery_quantity else 0
+            battery_capacity = float(battery_capacity) if battery_capacity else 0
         except (ValueError, TypeError):
-            battery_quantity = 0
-            battery_capacity = 0
+            pass
         
-        # Calculate price per kW (now safe from division by zero)
-        price_per_kw = total_price / system_size
+        # Check for INCOMPLETE verdict first
+        if not system_size or system_size <= 0 or not total_price or total_price <= 0:
+            verdict_data = VERDICT_DEFINITIONS['INCOMPLETE']
+            return jsonify({
+                'verdict_type': 'INCOMPLETE',
+                'verdict_label': verdict_data['label'],
+                'verdict_icon': verdict_data['icon'],
+                'verdict_summary': verdict_data['summary'],
+                'verdict_color': verdict_data['color'],
+                'grade': verdict_data['grade'],
+                'recommendations': [
+                    'Please provide the system size in kW (e.g., 4.0 for a 4kW system)',
+                    'Please provide the total quoted price including installation'
+                ],
+                'next_checks': [
+                    'Confirm total system size (kWp)',
+                    'Confirm total price including VAT and installation'
+                ]
+            })
         
-        # Determine grade based on price per kW
-        grade = 'F'  # Default to worst grade
-        grade_info = None
+        # Calculate solar kWp (system_size is already in kW)
+        solar_kwp = system_size
         
-        for grade_letter, tier in SOLAR_PRICING_TIERS.items():
-            if tier['min'] <= price_per_kw <= tier['max']:
-                grade = grade_letter
-                grade_info = tier
-                break
+        # Calculate battery kWh if present
+        battery_kwh = 0
+        if has_battery and battery_capacity > 0:
+            battery_kwh = battery_capacity * max(battery_quantity, 1)
         
-        if grade_info is None:
-            # Handle edge cases
-            if price_per_kw < SOLAR_PRICING_TIERS['A']['min']:
-                grade = 'A'
-                grade_info = SOLAR_PRICING_TIERS['A']
-            else:
-                grade = 'F'
-                grade_info = SOLAR_PRICING_TIERS['F']
+        # Allocate costs between solar and battery
+        if battery_kwh > 0:
+            # Estimate battery cost and derive solar cost
+            battery_cost_est = battery_kwh * BATTERY_ALLOCATION_ESTIMATE
+            solar_cost_est = max(total_price - battery_cost_est, 0)
+        else:
+            solar_cost_est = total_price
+            battery_cost_est = 0
         
-        # Calculate potential savings
-        market_average = 2150  # £/kW market average
-        if price_per_kw > market_average:
-            potential_savings = (price_per_kw - market_average) * system_size
+        # Calculate per-unit costs
+        solar_cost_per_kwp = solar_cost_est / solar_kwp if solar_kwp > 0 else 0
+        battery_cost_per_kwh = battery_cost_est / battery_kwh if battery_kwh > 0 else 0
+        
+        # Calculate expected total at mid-market rates
+        expected_total = (solar_kwp * MID_MARKET_SOLAR_PER_KWP)
+        if battery_kwh > 0:
+            expected_total += (battery_kwh * MID_MARKET_BATTERY_PER_KWH)
+        
+        # Calculate delta vs expected
+        delta_vs_expected = ((total_price - expected_total) / expected_total * 100) if expected_total > 0 else 0
+        
+        # Determine verdict using the new logic
+        verdict_type = determine_verdict(
+            solar_cost_per_kwp=solar_cost_per_kwp,
+            battery_cost_per_kwh=battery_cost_per_kwh,
+            battery_kwh=battery_kwh,
+            total_price=total_price,
+            expected_total=expected_total
+        )
+        
+        verdict_data = VERDICT_DEFINITIONS[verdict_type]
+        
+        # Generate dynamic recommendations and next checks
+        recommendations = generate_recommendations(verdict_type, solar_cost_per_kwp, battery_cost_per_kwh, delta_vs_expected)
+        next_checks = generate_next_checks(verdict_type, has_battery)
+        
+        # Calculate potential savings (for overpriced quotes)
+        if total_price > expected_total:
+            potential_savings = round(total_price - expected_total, 2)
         else:
             potential_savings = 0
         
-        # Build response (flattened structure for frontend compatibility)
+        # Build comprehensive response
         response = {
-            'grade': grade,
-            'verdict': grade_info['description'],
-            'system_size': system_size,
+            # New verdict system
+            'verdict_type': verdict_type,
+            'verdict_label': verdict_data['label'],
+            'verdict_icon': verdict_data['icon'],
+            'verdict_summary': verdict_data['summary'],
+            'verdict_color': verdict_data['color'],
+            'grade': verdict_data['grade'],
+            
+            # Numeric analysis
+            'system_size': solar_kwp,
             'total_price': total_price,
-            'price_per_kw': round(price_per_kw, 2),
-            'market_average': market_average,
-            'potential_savings': round(potential_savings, 2),
+            'solar_kwp': solar_kwp,
+            'solar_cost_per_kwp': round(solar_cost_per_kwp, 2),
+            'battery_kwh': battery_kwh,
+            'battery_cost_per_kwh': round(battery_cost_per_kwh, 2) if battery_kwh > 0 else None,
+            'expected_total': round(expected_total, 2),
+            'delta_vs_expected': round(delta_vs_expected, 1),
+            'potential_savings': potential_savings,
             'has_battery': has_battery,
-            'recommendations': [],
-            # Also include nested structure for backward compatibility
+            
+            # Guidance
+            'recommendations': recommendations,
+            'next_checks': next_checks,
+            
+            # Legacy compatibility (price_per_kw for old frontend)
+            'price_per_kw': round(solar_cost_per_kwp, 2),
+            'market_average': MID_MARKET_SOLAR_PER_KWP,
+            'verdict': verdict_data['summary'],
+            
+            # Nested structure for backward compatibility
             'analysis': {
-                'system_size': system_size,
+                'system_size': solar_kwp,
                 'total_price': total_price,
-                'price_per_kw': round(price_per_kw, 2),
-                'market_average': market_average,
-                'potential_savings': round(potential_savings, 2),
+                'price_per_kw': round(solar_cost_per_kwp, 2),
+                'market_average': MID_MARKET_SOLAR_PER_KWP,
+                'potential_savings': potential_savings,
                 'has_battery': has_battery
             }
         }
-        
-        # Add recommendations based on grade
-        if grade in ['D', 'F']:
-            response['recommendations'].append('Consider negotiating the price')
-            response['recommendations'].append('Get additional quotes for comparison')
-        
-        if potential_savings > 1000:
-            response['recommendations'].append(f'You could save up to £{potential_savings:,.0f} with better pricing')
         
         return jsonify(response)
         
