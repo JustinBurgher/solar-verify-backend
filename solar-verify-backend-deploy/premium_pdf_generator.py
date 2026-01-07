@@ -12,6 +12,7 @@ from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
 from datetime import datetime
 import io
 import base64
+from resend_email import send_email
 
 
 def generate_premium_pdf_report(analysis_data):
@@ -391,14 +392,14 @@ def generate_premium_pdf_report(analysis_data):
     return buffer
 
 
-def send_premium_report_email(user_email, analysis_data, sendgrid_client):
+def send_premium_report_email(user_email, analysis_data, sendgrid_client=None):
     """
-    Send premium analysis report via email with PDF attachment
+    Send premium analysis report via email with PDF attachment using Resend
     
     Args:
         user_email: Recipient email address
         analysis_data: Analysis results dictionary
-        sendgrid_client: SendGrid API client instance
+        sendgrid_client: DEPRECATED - kept for backward compatibility, not used
         
     Returns:
         Boolean indicating success
@@ -411,78 +412,72 @@ def send_premium_report_email(user_email, analysis_data, sendgrid_client):
         # Encode PDF for email attachment
         encoded_pdf = base64.b64encode(pdf_data).decode()
         
-        # Create email
+        # Create email content
         grade = analysis_data.get('grade', 'N/A')
         system_size = analysis_data.get('basic_analysis', {}).get('system_size', 0)
         
-        message = Mail(
-            from_email='justinburgher@solarverify.co.uk',
-            to_emails=user_email,
-            subject=f'Your SolarVerify Premium Analysis Report (Grade: {grade})',
-            html_content=f"""
-            <html>
-            <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-                <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
-                    <div style="background: linear-gradient(135deg, #0d9488 0%, #2563eb 100%); padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
-                        <h1 style="color: white; margin: 0;">SolarVerify Premium</h1>
-                        <p style="color: white; margin: 10px 0 0 0; opacity: 0.9;">Your Comprehensive Solar Quote Analysis</p>
+        html_content = f"""
+        <html>
+        <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+            <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
+                <div style="background: linear-gradient(135deg, #f97316 0%, #ea580c 100%); padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
+                    <h1 style="color: white; margin: 0;">SolarVerify Premium</h1>
+                    <p style="color: white; margin: 10px 0 0 0; opacity: 0.9;">Your Comprehensive Solar Quote Analysis</p>
+                </div>
+                
+                <div style="background: #f9fafb; padding: 30px; border-radius: 0 0 10px 10px;">
+                    <h2 style="color: #f97316; margin-top: 0;">Analysis Complete!</h2>
+                    
+                    <p>Thank you for using SolarVerify Premium. Your comprehensive solar quote analysis is ready.</p>
+                    
+                    <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #f97316;">
+                        <h3 style="margin-top: 0; color: #f97316;">Your Quote Summary</h3>
+                        <p style="margin: 5px 0;"><strong>System Size:</strong> {system_size} kW</p>
+                        <p style="margin: 5px 0;"><strong>Overall Grade:</strong> <span style="font-size: 24px; font-weight: bold; color: #f97316;">{grade}</span></p>
                     </div>
                     
-                    <div style="background: #f9fafb; padding: 30px; border-radius: 0 0 10px 10px;">
-                        <h2 style="color: #0d9488; margin-top: 0;">Analysis Complete!</h2>
-                        
-                        <p>Thank you for using SolarVerify Premium. Your comprehensive solar quote analysis is ready.</p>
-                        
-                        <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #0d9488;">
-                            <h3 style="margin-top: 0; color: #0d9488;">Your Quote Summary</h3>
-                            <p style="margin: 5px 0;"><strong>System Size:</strong> {system_size} kW</p>
-                            <p style="margin: 5px 0;"><strong>Overall Grade:</strong> <span style="font-size: 24px; font-weight: bold; color: #0d9488;">{grade}</span></p>
-                        </div>
-                        
-                        <p><strong>Your detailed PDF report is attached to this email.</strong> It includes:</p>
-                        <ul style="padding-left: 20px;">
-                            <li>Detailed component analysis (panels, inverter, battery)</li>
-                            <li>Installation details assessment</li>
-                            <li>Installer credibility review</li>
-                            <li>Critical red flags (if any)</li>
-                            <li>Things to consider before proceeding</li>
-                            <li>Important questions to ask your installer</li>
-                        </ul>
-                        
-                        <div style="background: #fef3c7; padding: 15px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #f59e0b;">
-                            <p style="margin: 0;"><strong>⚠️ Important:</strong> This report is for informational purposes only. Always conduct your own due diligence and consult with qualified professionals before making installation decisions.</p>
-                        </div>
-                        
-                        <p>Need another analysis? Log in to your premium account at <a href="https://solarverify.co.uk" style="color: #0d9488;">solarverify.co.uk</a></p>
-                        
-                        <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 30px 0;">
-                        
-                        <p style="font-size: 12px; color: #6b7280; margin: 0;">
-                            Questions or feedback? Reply to this email or contact us at justinburgher@solarverify.co.uk
-                        </p>
-                        <p style="font-size: 12px; color: #6b7280; margin: 5px 0 0 0;">
-                            © {datetime.now().year} SolarVerify. All rights reserved.
-                        </p>
+                    <p><strong>Your detailed PDF report is attached to this email.</strong> It includes:</p>
+                    <ul style="padding-left: 20px;">
+                        <li>Detailed component analysis (panels, inverter, battery)</li>
+                        <li>Installation details assessment</li>
+                        <li>Installer credibility review</li>
+                        <li>Critical red flags (if any)</li>
+                        <li>Things to consider before proceeding</li>
+                        <li>Important questions to ask your installer</li>
+                    </ul>
+                    
+                    <div style="background: #fef3c7; padding: 15px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #f59e0b;">
+                        <p style="margin: 0;"><strong>⚠️ Important:</strong> This report is for informational purposes only. Always conduct your own due diligence and consult with qualified professionals before making installation decisions.</p>
                     </div>
+                    
+                    <p>Need another analysis? Log in to your premium account at <a href="https://solarverify.co.uk" style="color: #f97316;">solarverify.co.uk</a></p>
+                    
+                    <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 30px 0;">
+                    
+                    <p style="font-size: 12px; color: #6b7280; margin: 0;">
+                        Questions or feedback? Reply to this email or contact us at justinburgher@solarverify.co.uk
+                    </p>
+                    <p style="font-size: 12px; color: #6b7280; margin: 5px 0 0 0;">
+                        © {datetime.now().year} SolarVerify. All rights reserved.
+                    </p>
                 </div>
-            </body>
-            </html>
-            """
+            </div>
+        </body>
+        </html>
+        """
+        
+        # Send email using Resend with attachment
+        attachments = [{
+            'filename': f'SolarVerify_Premium_Report_{datetime.now().strftime("%Y%m%d")}.pdf',
+            'content': encoded_pdf
+        }]
+        
+        return send_email(
+            to_email=user_email,
+            subject=f'Your SolarVerify Premium Analysis Report (Grade: {grade})',
+            html_content=html_content,
+            attachments=attachments
         )
-        
-        # Attach PDF
-        attachment = Attachment(
-            FileContent(encoded_pdf),
-            FileName(f'SolarVerify_Premium_Report_{datetime.now().strftime("%Y%m%d")}.pdf'),
-            FileType('application/pdf'),
-            Disposition('attachment')
-        )
-        message.attachment = attachment
-        
-        # Send email
-        response = sendgrid_client.send(message)
-        
-        return response.status_code in [200, 201, 202]
         
     except Exception as e:
         print(f"Error sending premium report email: {str(e)}")

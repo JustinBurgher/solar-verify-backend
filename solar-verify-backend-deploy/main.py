@@ -5,8 +5,8 @@ import jwt
 from datetime import datetime, timedelta
 from flask import Flask, jsonify, request
 from flask_cors import CORS
-from sendgrid import SendGridAPIClient
-from sendgrid.helpers.mail import Mail, Attachment, FileContent, FileName, FileType, Disposition
+# Resend email helper (replaces SendGrid)
+from resend_email import send_email, send_email_with_attachment, send_email_with_resend
 import base64
 import stripe
 from premium_pdf_generator import send_premium_report_email
@@ -335,110 +335,100 @@ def verify_magic_link_token(token, mark_as_used=True):
         return None, 'Invalid token'
 
 def send_magic_link_email(email, token):
-    """Send magic link via SendGrid"""
+    """Send magic link via Resend"""
     try:
         magic_link = f"{FRONTEND_URL}/verify?token={token}"
         
-        message = Mail(
-            from_email='justinburgher@solarverify.co.uk',
-            to_emails=email,
-            subject='Verify Your Email - Solar Verify',
-            html_content=f'''
-            <html>
-            <head>
-                <style>
-                    body {{
-                        font-family: Arial, sans-serif;
-                        line-height: 1.6;
-                        color: #333;
-                    }}
-                    .container {{
-                        max-width: 600px;
-                        margin: 0 auto;
-                        padding: 20px;
-                    }}
-                    .header {{
-                        background: linear-gradient(135deg, #14b8a6 0%, #3b82f6 100%);
-                        color: white;
-                        padding: 30px;
-                        text-align: center;
-                        border-radius: 8px 8px 0 0;
-                    }}
-                    .content {{
-                        background: #f9f9f9;
-                        padding: 30px;
-                        border-radius: 0 0 8px 8px;
-                    }}
-                    .button {{
-                        display: inline-block;
-                        background: #14b8a6;
-                        color: white;
-                        padding: 15px 40px;
-                        text-decoration: none;
-                        border-radius: 5px;
-                        font-weight: bold;
-                        margin: 20px 0;
-                    }}
-                    .button:hover {{
-                        background: #0d9488;
-                    }}
-                    .footer {{
-                        text-align: center;
-                        margin-top: 20px;
-                        color: #888;
-                        font-size: 12px;
-                    }}
-                    .note {{
-                        background: #fff3cd;
-                        border-left: 4px solid #ffc107;
-                        padding: 15px;
-                        margin: 20px 0;
-                    }}
-                </style>
-            </head>
-            <body>
-                <div class="container">
-                    <div class="header">
-                        <h1>Solar✓erify</h1>
-                        <p>Verify your email to access your results</p>
-                    </div>
-                    <div class="content">
-                        <h2>Welcome to Solar Verify!</h2>
-                        <p>Thank you for using our solar quote analysis service. Click the button below to verify your email and access your free analysis results and Solar Buyer's Guide:</p>
-                        
-                        <div style="text-align: center;">
-                            <a href="{magic_link}" class="button">Verify Email & Get My Results</a>
-                        </div>
-                        
-                        <div class="note">
-                            <strong>⏱️ This link expires in 10 minutes</strong><br>
-                            For security, this is a one-time link that can only be used once.
-                        </div>
-                        
-                        <p>If the button doesn't work, copy and paste this link into your browser:</p>
-                        <p style="word-break: break-all; color: #14b8a6;">{magic_link}</p>
-                        
-                        <p style="margin-top: 30px; color: #666;">If you didn't request this email, please ignore it.</p>
-                    </div>
-                    <div class="footer">
-                        <p>© 2024 Solar✓erify Ltd. All rights reserved.</p>
-                        <p>Email: justinburgher@solarverify.co.uk | Website: www.solarverify.co.uk</p>
-                    </div>
+        html_content = f'''
+        <html>
+        <head>
+            <style>
+                body {{
+                    font-family: Arial, sans-serif;
+                    line-height: 1.6;
+                    color: #333;
+                }}
+                .container {{
+                    max-width: 600px;
+                    margin: 0 auto;
+                    padding: 20px;
+                }}
+                .header {{
+                    background: linear-gradient(135deg, #f97316 0%, #ea580c 100%);
+                    color: white;
+                    padding: 30px;
+                    text-align: center;
+                    border-radius: 8px 8px 0 0;
+                }}
+                .content {{
+                    background: #f9f9f9;
+                    padding: 30px;
+                    border-radius: 0 0 8px 8px;
+                }}
+                .button {{
+                    display: inline-block;
+                    background: #f97316;
+                    color: white;
+                    padding: 15px 40px;
+                    text-decoration: none;
+                    border-radius: 5px;
+                    font-weight: bold;
+                    margin: 20px 0;
+                }}
+                .footer {{
+                    text-align: center;
+                    margin-top: 20px;
+                    color: #888;
+                    font-size: 12px;
+                }}
+                .note {{
+                    background: #fff3cd;
+                    border-left: 4px solid #ffc107;
+                    padding: 15px;
+                    margin: 20px 0;
+                }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h1>SolarVerify</h1>
+                    <p>Verify your email to access your results</p>
                 </div>
-            </body>
-            </html>
-            '''
-        )
+                <div class="content">
+                    <h2>Welcome to SolarVerify!</h2>
+                    <p>Thank you for using our solar quote analysis service. Click the button below to verify your email and access your free analysis results and Solar Buyer's Guide:</p>
+                    
+                    <div style="text-align: center;">
+                        <a href="{magic_link}" class="button">Verify Email & Get My Results</a>
+                    </div>
+                    
+                    <div class="note">
+                        <strong>⏱️ This link expires in 10 minutes</strong><br>
+                        For security, this is a one-time link that can only be used once.
+                    </div>
+                    
+                    <p>If the button doesn't work, copy and paste this link into your browser:</p>
+                    <p style="word-break: break-all; color: #f97316;">{magic_link}</p>
+                    
+                    <p style="margin-top: 30px; color: #666;">If you didn't request this email, please ignore it.</p>
+                </div>
+                <div class="footer">
+                    <p>© 2025 SolarVerify. All rights reserved.</p>
+                    <p>Email: justinburgher@solarverify.co.uk | Website: www.solarverify.co.uk</p>
+                </div>
+            </div>
+        </body>
+        </html>
+        '''
         
-        sg = SendGridAPIClient(os.environ.get('SENDGRID_API_KEY'))
-        response = sg.send(message)
-        return response.status_code == 202
+        return send_email(email, 'Verify Your Email - SolarVerify', html_content)
     except Exception as e:
         print(f"Error sending email: {str(e)}")
         return False
 
 def send_pdf_email(email, analysis_data):
-    """Send PDF guide via email after verification"""
+    """Send PDF guide via email after verification using Resend"""
     try:
         # Read the PDF file
         pdf_path = os.path.join(os.path.dirname(__file__), 'solar_verify_professional_guide_final.pdf')
@@ -449,7 +439,6 @@ def send_pdf_email(email, analysis_data):
         encoded_pdf = base64.b64encode(pdf_data).decode()
         
         # Handle both nested and flat data structures
-        # Try flat structure first (new format)
         system_size = analysis_data.get('system_size')
         total_price = analysis_data.get('total_price')
         price_per_kw = analysis_data.get('price_per_kw')
@@ -471,124 +460,59 @@ def send_pdf_email(email, analysis_data):
         grade = analysis_data.get('grade', 'N/A')
         verdict = analysis_data.get('verdict', 'Analysis complete')
         
-        message = Mail(
-            from_email='justinburgher@solarverify.co.uk',
-            to_emails=email,
-            subject='Your Solar Quote Analysis & Free Buyer\'s Guide',
-            html_content=f'''
-            <html>
-            <head>
-                <style>
-                    body {{
-                        font-family: Arial, sans-serif;
-                        line-height: 1.6;
-                        color: #333;
-                    }}
-                    .container {{
-                        max-width: 600px;
-                        margin: 0 auto;
-                        padding: 20px;
-                    }}
-                    .header {{
-                        background: linear-gradient(135deg, #14b8a6 0%, #3b82f6 100%);
-                        color: white;
-                        padding: 30px;
-                        text-align: center;
-                        border-radius: 8px 8px 0 0;
-                    }}
-                    .content {{
-                        background: #f9f9f9;
-                        padding: 30px;
-                        border-radius: 0 0 8px 8px;
-                    }}
-                    .grade {{
-                        font-size: 48px;
-                        font-weight: bold;
-                        text-align: center;
-                        color: #14b8a6;
-                        margin: 20px 0;
-                    }}
-                    .analysis-box {{
-                        background: white;
-                        padding: 20px;
-                        border-radius: 8px;
-                        margin: 20px 0;
-                    }}
-                    .footer {{
-                        text-align: center;
-                        margin-top: 20px;
-                        color: #888;
-                        font-size: 12px;
-                    }}
-                </style>
-            </head>
-            <body>
-                <div class="container">
-                    <div class="header">
-                        <h1>Solar✓erify</h1>
-                        <p>Your Solar Quote Analysis Results</p>
-                    </div>
-                    <div class="content">
-                        <h2>Your Quote Grade</h2>
-                        <div class="grade">Grade {grade}</div>
-                        <div class="analysis-box">
-                            <p><strong>System Size:</strong> {system_size}</p>
-                            <p><strong>Total Price:</strong> £{total_price:,.0f}</p>
-                            <p><strong>Price per kW:</strong> £{price_per_kw:.2f}</p>
-                            <p><strong>Verdict:</strong> {verdict}</p>
-                        </div>
-                        <h3>📄 Your Free Solar Buyer's Guide</h3>
-                        <p>We've attached "The Complete Solar Quote Buyer's Guide" to this email. This comprehensive guide will help you:</p>
-                        <ul>
-                            <li>Identify fair pricing and avoid overpriced quotes</li>
-                            <li>Recognize quality equipment vs poor components</li>
-                            <li>Spot installer red flags and warning signs</li>
-                            <li>Negotiate better deals and protect your investment</li>
-                        </ul>
-                        <h3>🚀 Want More Detailed Analysis?</h3>
-                        <p style="margin-bottom: 10px;">
-                            <span style="text-decoration: line-through; color: #888;">£49.99</span>
-                            <strong style="font-size: 24px; color: #14b8a6; margin-left: 10px;">£44.99</strong>
-                        </p>
-                        <p style="background: #fef3c7; border-left: 4px solid #f59e0b; padding: 10px; margin: 15px 0; border-radius: 4px;">
-                            <strong>🔥 LAUNCH SPECIAL - SAVE £25</strong>
-                        </p>
-                        <p>Upgrade to our Premium Analysis for:</p>
-                        <ul>
-                            <li>15+ page detailed PDF report</li>
-                            <li>Component-by-component breakdown</li>
-                            <li>Installer reputation check</li>
-                            <li>Personalized negotiation strategies</li>
-                            <li>Direct access to solar experts</li>
-                        </ul>
-                        <p style="text-align: center; margin-top: 30px;">
-                            <a href="{FRONTEND_URL}/upgrade" style="background: #14b8a6; color: white; padding: 15px 30px; text-decoration: none; border-radius: 5px; display: inline-block; font-weight: bold;">Upgrade to Premium - £44.99</a>
-                        </p>
-                        <p style="text-align: center; color: #666; font-size: 12px; margin-top: 10px;">
-                            One-off payment • Instant unlock • 30-day money-back guarantee
-                        </p>
-                    </div>
-                    <div class="footer">
-                        <p>© 2024 Solar✓erify Ltd. All rights reserved.</p>
-                        <p>Email: justinburgher@solarverify.co.uk | Website: www.solarverify.co.uk</p>
-                    </div>
+        html_content = f'''
+        <html>
+        <head>
+            <style>
+                body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
+                .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
+                .header {{ background: linear-gradient(135deg, #f97316 0%, #ea580c 100%); color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0; }}
+                .content {{ background: #f9f9f9; padding: 30px; border-radius: 0 0 8px 8px; }}
+                .grade {{ font-size: 48px; font-weight: bold; text-align: center; color: #f97316; margin: 20px 0; }}
+                .analysis-box {{ background: white; padding: 20px; border-radius: 8px; margin: 20px 0; }}
+                .footer {{ text-align: center; margin-top: 20px; color: #888; font-size: 12px; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h1>SolarVerify</h1>
+                    <p>Your Solar Quote Analysis Results</p>
                 </div>
-            </body>
-            </html>
-            '''
+                <div class="content">
+                    <h2>Your Quote Verdict</h2>
+                    <div class="grade">{verdict}</div>
+                    <div class="analysis-box">
+                        <p><strong>System Size:</strong> {system_size}</p>
+                        <p><strong>Total Price:</strong> £{total_price:,.0f}</p>
+                        <p><strong>Price per kW:</strong> £{price_per_kw:.2f}</p>
+                    </div>
+                    <h3>📄 Your Free Solar Buyer's Guide</h3>
+                    <p>We've attached "The Complete Solar Quote Buyer's Guide" to this email. This comprehensive guide will help you:</p>
+                    <ul>
+                        <li>Identify fair pricing and avoid overpriced quotes</li>
+                        <li>Recognize quality equipment vs poor components</li>
+                        <li>Spot installer red flags and warning signs</li>
+                        <li>Negotiate better deals and protect your investment</li>
+                    </ul>
+                </div>
+                <div class="footer">
+                    <p>© 2025 SolarVerify. All rights reserved.</p>
+                    <p>Email: justinburgher@solarverify.co.uk | Website: www.solarverify.co.uk</p>
+                </div>
+            </div>
+        </body>
+        </html>
+        '''
+        
+        # Send email using Resend
+        return send_email_with_resend(
+            to_email=email,
+            subject="Your Solar Quote Analysis & Free Buyer's Guide",
+            html_content=html_content,
+            attachment_data=encoded_pdf,
+            attachment_filename="Solar_Buyers_Guide.pdf"
         )
-        
-        # Attach PDF
-        attachment = Attachment()
-        attachment.file_content = FileContent(encoded_pdf)
-        attachment.file_type = FileType('application/pdf')
-        attachment.file_name = FileName('Solar_Buyers_Guide.pdf')
-        attachment.disposition = Disposition('attachment')
-        message.attachment = attachment
-        
-        sg = SendGridAPIClient(os.environ.get('SENDGRID_API_KEY'))
-        response = sg.send(message)
-        return response.status_code == 202
     except Exception as e:
         print(f"Error sending PDF email: {str(e)}")
         return False
@@ -1112,16 +1036,15 @@ def analyze_premium_quote():
             'user_email': user_email
         }
         
-        # Generate and send PDF report via email
+        # Generate and send PDF report via email using Resend
         try:
-            sendgrid_api_key = os.environ.get('SENDGRID_API_KEY')
-            if sendgrid_api_key:
-                sg = SendGridAPIClient(sendgrid_api_key)
-                email_sent = send_premium_report_email(user_email, response, sg)
+            resend_api_key = os.environ.get('RESEND_API_KEY')
+            if resend_api_key:
+                email_sent = send_premium_report_email(user_email, response)
                 response['email_sent'] = email_sent
             else:
                 response['email_sent'] = False
-                response['email_error'] = 'SendGrid API key not configured'
+                response['email_error'] = 'Resend API key not configured'
         except Exception as email_error:
             print(f"Error sending premium report email: {str(email_error)}")
             response['email_sent'] = False
